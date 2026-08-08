@@ -1,0 +1,75 @@
+# StableMimic G1 reproduction configuration.
+# Values marked "reproduction choice" are not specified by arXiv:2608.02385.
+seed: 42
+data_root: /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
+output_root: /root/gpufree-data/stablemimic_replicate/runs
+
+environment:
+  num_envs: 4096
+  episode_length_s: 20.0
+  physics_dt: 0.005
+  decimation: 4
+  action_scale: 0.5          # reproduction choice
+  tracking_reset_probability: 0.5
+  transition_duration_s: 1.5
+  recovery_error_timeout_s: 2.0
+  recovery_success_threshold: 0.82  # reproduction choice
+  observation_noise_std: 0.0       # reproduction choice; disabled baseline
+
+reset_noise:
+  root_xy: [-0.05, 0.05]
+  root_z: [-0.01, 0.01]
+  roll_pitch: [-0.1, 0.1]
+  yaw: [-0.2, 0.2]
+  linear_velocity_xy: [-0.5, 0.5]
+  linear_velocity_z: [-0.2, 0.2]
+  angular_velocity_roll_pitch: [-0.52, 0.52]
+  angular_velocity_yaw: [-0.78, 0.78]
+  joint_position: [-0.1, 0.1]
+
+reward:
+  # All kernel weights/sigmas are reproduction choices; the paper publishes
+  # the six error families but not their numerical values.
+  root_position: {weight: 1.0, sigma: 0.20}
+  root_orientation: {weight: 1.0, sigma: 0.35}
+  body_position: {weight: 2.0, sigma: 0.15}
+  body_orientation: {weight: 1.0, sigma: 0.40}
+  body_linear_velocity: {weight: 0.5, sigma: 1.00}
+  body_angular_velocity: {weight: 0.5, sigma: 2.00}
+  recovery_multiplier: 2.5
+  action_rate_penalty: -0.01
+  torque_penalty: -0.00002
+  power_penalty: -0.00001
+  joint_limit_penalty: -1.0
+
+model:
+  history_length: 4
+  expert_hidden_dims: [512, 256, 128]
+  gate_hidden_dims: [256, 128]  # reproduction choice
+  critic_hidden_dims: [512, 256, 128]  # reproduction choice
+  activation: elu
+  initial_std: 1.0
+
+ppo:
+  rollout_steps: 24
+  epochs: 5
+  minibatches: 4
+  learning_rate: 0.001
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_clip: 0.2
+  value_loss_coefficient: 1.0
+  entropy_coefficient: 0.05
+  max_grad_norm: 1.0
+  target_kl: 0.01          # reproduction choice for adaptive LR rule
+  gate_ce_coefficient: 0.1
+  transition_coefficient: 4.0
+  consistency_coefficient: 0.01
+  alignment_coefficient: 0.01
+  normalize_advantage: true
+
+training:
+  max_iterations: 10000
+  checkpoint_interval: 100
+  log_interval: 10

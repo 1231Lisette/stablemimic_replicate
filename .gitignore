@@ -13,6 +13,9 @@ logs/
 checkpoints/
 cache/
 outputs/
+runs/
+*.pt
+*.onnx
 
 # Isaac Sim runtime artifacts.
 kit/logs/

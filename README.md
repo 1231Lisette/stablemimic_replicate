@@ -1,89 +1,281 @@
 # stablemimic_replicate
 
-Reproduction of the Unitree G1 + retargeted LAFAN1 StableMimic baseline described in arXiv:2608.02385.
+Unitree G1 + 公开 LAFAN1 重定向数据的 StableMimic 复现工程，依据
+arXiv:2608.02385 构建。
 
-## Status
+## 当前状态
 
-The repository is currently at **Gate 0 / Phase 1**:
+代码栈已经覆盖：
 
-- repository and public dataset audit completed;
-- simulator-independent LAFAN1 CSV loading and continuous-time sampling foundation;
-- Isaac Lab G1 29-DoF reference visualizer and deterministic offscreen validation;
-- no PPO training, recovery policy, mixture of experts, or deployment code yet.
+- 严格的 36 列 LAFAN1 CSV loader，8 个 `dance` 与 6 个 `fallAndGetUp` 序列分库；
+- 30 FPS reference 在 50 Hz policy clock 上的线性插值、四元数 SLERP 和速度派生；
+- Isaac Lab G1 29 个 body joint 到运行时 43 joint articulation 的显式映射；
+- Tracking / Recovery / 1.5 秒 Transition 三阶段状态机与水平 reference realignment；
+- 论文对应的六类 whole-body Gaussian tracking error；
+- 4 帧 Actor / Gate / Critic history，维度严格为 884 / 372 / 1428；
+- 两个 512-256-128 ELU Expert、proprioceptive softmax Gate、29-D soft-fused mean；
+- shared learned scalar policy std、privileged Critic、normalization；
+- rollout storage、GAE、PPO、adaptive learning rate 与四项 auxiliary loss；
+- tracking-only、recovery-only、50/50 joint training、续训与 checkpoint；
+- 确定性 Isaac 评估、论文形式的 100 次 matched push schedule；
+- 单一 deployable Actor ONNX 导出、metadata 与 PyTorch/ONNX 数值对齐检查。
 
-## Fact boundary
+代码完整不等于已经训练完成。目前仓库不包含收敛权重，也不宣称已经达到论文指标。
+正式长训练应在下述 smoke test 全部通过后再开始。
 
-The paper states that MuJoCo is the common evaluation simulator, but it does not identify the training simulator. This repository uses the server's Isaac Lab installation as a **reproduction engineering choice**, not as a claim about the authors' training stack.
+本次代码完整性验收记录见
+[`docs/CODE_COMPLETE_VALIDATION.md`](docs/CODE_COMPLETE_VALIDATION.md)。
 
-## Server layout
+## 论文事实与复现选择
+
+论文明确公布了网络宽度、历史长度、PPO 主要参数、50 Hz、4096 env、20 秒
+horizon、50/50 reset、1.5 秒 transition 和 auxiliary loss 系数，但没有公开训练
+simulator、逐元素 observation schema、PD/action 参数、六个 kernel 的数值以及完整
+randomization。
+
+本项目选择 Isaac Lab 作为训练 simulator。所有缺失参数集中在
+[`configs/stablemimic_g1.yaml`](configs/stablemimic_g1.yaml)，并标注为
+`reproduction choice`，不能当作论文原始参数引用。
+
+## 信息边界
+
+| 信息 | Expert | Gate | Critic | Reset/Reward | 部署 |
+|---|---:|---:|---:|---:|---:|
+| 正常 motion command | 是 | 否 | 是 | 是 | 是 |
+| noisy deployable proprioception | 是 | 是 | 是 | 否 | 是 |
+| uncorrupted proprioception | 否 | 否 | 是 | 是 | 否 |
+| recovery sequence/frame/successor | 否 | 否 | 是 | 是 | 否 |
+| phase/gate supervision label | 否 | 否 | 否 | loss only | 否 |
+
+每帧 Gate observation 为 `3+3+29+29+29=93`。Actor 在此基础上加入
+128-D 正常运动命令得到 221-D。Critic 再加入 93-D uncorrupted proprioception
+和 43-D hidden recovery successor 得到 357-D。四帧历史分别为
+`372 / 884 / 1428`。Recovery reference 从不进入 Expert、Gate 或 ONNX。
+
+## 服务器目录
 
 ```text
-Code: /root/gpufree-share/stablemimic_replicate
-Data: /root/gpufree-data/stablemimic_replicate
+代码: /root/gpufree-share/stablemimic_replicate
+数据: /root/gpufree-data/stablemimic_replicate
+CSV : /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
+运行输出: /root/gpufree-data/stablemimic_replicate/runs
 ```
 
-The first-stage dataset is expected at:
-
-```text
-/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
-```
-
-Only these files are used initially:
-
-- tracking: `dance*.csv`
-- recovery references: `fallAndGetUp*.csv`
-
-## Quick checks
-
-Run the simulator-independent unit and integration tests with Isaac Lab's Python:
+请始终从代码目录运行：
 
 ```bash
 cd /root/gpufree-share/stablemimic_replicate
-PYTHONPATH=src LAFAN1_G1_ROOT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1 \
-  /workspace/isaaclab/isaaclab.sh -p -m unittest discover -s tests -v
+export PYTHONPATH=src
 ```
 
-Audit the real CSV library:
+## 1. 检查环境与数据
+
+运行全部单元/真实数据测试：
 
 ```bash
-cd /root/gpufree-share/stablemimic_replicate
-PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/audit_lafan1.py \
+LAFAN1_G1_ROOT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1 \
+  /isaac-sim/python.sh -m unittest discover -s tests -v
+```
+
+单独审计 CSV：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/audit_lafan1.py \
   --data-root /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
 ```
 
-Run a short headless G1 asset/mapping smoke test:
+检查 G1、29→43 mapping 与 50 Hz physics step：
 
 ```bash
-cd /root/gpufree-share/stablemimic_replicate
-PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/visualize_lafan1_g1.py \
+/workspace/isaaclab/isaaclab.sh -p scripts/visualize_lafan1_g1.py \
   --file /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1/dance1_subject1.csv \
   --headless --max-steps 5
 ```
 
-Render deterministic two-view evidence at explicit source times:
+视觉验收结果见
+[`docs/PHASE1_VISUAL_VALIDATION.md`](docs/PHASE1_VISUAL_VALIDATION.md)。
+
+## 2. 必做的端到端 smoke test
+
+该命令只运行 4 个环境、24 个 policy steps 和一次 PPO update，不是正式训练：
 
 ```bash
-cd /root/gpufree-share/stablemimic_replicate
-PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/render_lafan1_g1.py \
-  --file /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1/fallAndGetUp1_subject1.csv \
-  --times 4.5,5.7,6.5,8.5,10.0 \
-  --output-dir /root/gpufree-data/stablemimic_replicate/visualizations/phase1 \
-  --headless --enable_cameras --width 512 --height 512
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --mode joint \
+  --num-envs 4 \
+  --iterations 1 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/smoke \
+  --headless
 ```
 
-The committed visual evidence and acceptance record are in
-[`docs/PHASE1_VISUAL_VALIDATION.md`](docs/PHASE1_VISUAL_VALIDATION.md).
-
-The audited Isaac Sim 5.1 container can block during application shutdown after successful simulation. CLI utilities include a documented 15-second shutdown watchdog so completed runs terminate and release the GPU.
-
-For interactive viewing, omit `--headless` and use the server's supported display/livestream method.
-
-## Data format
-
-Each raw CSV row has no header and contains 36 values:
+成功标准：输出包含有限的 reward/loss/KL/std、生成 `latest.pt`，并出现：
 
 ```text
-root position XYZ + root quaternion QX QY QZ QW + 29 joint positions
+[PASS] Training run completed.
 ```
 
-The source data is 30 FPS. Policy/reference access is time-based through `MotionReference.sample(t)`; it is never advanced with a simple one-frame-per-policy-step rule.
+## 3. 分阶段训练
+
+建议不要一上来直接运行 joint long training。
+
+### 3.1 Tracking-only
+
+只从 `dance*.csv` reset：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --mode tracking \
+  --num-envs 512 \
+  --iterations 1000 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/tracking_v1 \
+  --headless
+```
+
+先观察 `metrics.jsonl` 中 reward、policy std、KL 和 loss 是否有限、稳定，再增加
+环境数和迭代数。配置保留论文的 4096 env，但单张 24 GB RTX 4090 上本实现同时维护
+controlled/reference 两套 articulation，应从 256 或 512 env 起逐级测试显存。
+
+### 3.2 Recovery-only
+
+只从 `fallAndGetUp*.csv` 的均匀/失败自适应混合分布 reset：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --mode recovery \
+  --num-envs 512 \
+  --iterations 1000 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/recovery_v1 \
+  --headless
+```
+
+Recovery Actor 看不到 get-up reference；hidden successor 只用于 Critic 和 reward。
+
+### 3.3 50/50 joint training
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --mode joint \
+  --num-envs 512 \
+  --iterations 10000 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/joint_v1 \
+  --headless
+```
+
+`joint` 使用配置中的 `tracking_reset_probability: 0.5`。两个 Expert 始终输出
+29-D mean，Gate 只看 proprioceptive history，并连续 soft fusion，不存在硬编码
+`if fallen` policy switch。
+
+## 4. 续训
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --mode joint \
+  --num-envs 512 \
+  --iterations 2000 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/joint_v1 \
+  --resume /root/gpufree-data/stablemimic_replicate/runs/joint_v1/latest.pt \
+  --headless
+```
+
+Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iteration 和配置快照。
+
+## 5. 确定性评估
+
+普通评估：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/evaluate_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_v1/latest.pt \
+  --num-envs 64 \
+  --steps 1000 \
+  --output /root/gpufree-data/stablemimic_replicate/runs/joint_v1/eval.json \
+  --headless
+```
+
+论文形式的 matched pushes：100 个并行环境，`±x/±y` 每方向 25 次，
+525–575 N、持续 0.2 秒：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/evaluate_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_v1/latest.pt \
+  --num-envs 100 \
+  --steps 1000 \
+  --matched-pushes \
+  --output /root/gpufree-data/stablemimic_replicate/runs/joint_v1/push_eval.json \
+  --headless
+```
+
+该模式强制所有环境从正常 Tracking 状态开始，再在第 50 个 policy step 同时施加
+matched push；不会混入 Recovery reset。
+
+论文的统一评测 simulator 是 MuJoCo，但公开材料没有给出可直接复用的精确 G1 MJCF、
+PD 和 observation adapter。本仓库当前命令在 Isaac 中复现相同 push schedule；在精确
+MuJoCo asset/adapter 固定前，不把它称为论文 MuJoCo 指标。
+
+仓库也提供了严格 joint-name/actuator 校验的 MuJoCo adapter。安装 `mujoco>=3.2` 并
+提供你确认过的 G1 MJCF 后，可运行完整 motion：
+
+```bash
+/isaac-sim/python.sh -m pip install 'mujoco>=3.2'
+/isaac-sim/python.sh scripts/evaluate_mujoco.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_v1/latest.pt \
+  --mjcf /path/to/verified_g1.xml \
+  --motion /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1/dance1_subject1.csv \
+  --output /root/gpufree-data/stablemimic_replicate/runs/joint_v1/mujoco_dance1.json
+```
+
+该 adapter 固定 MuJoCo `dt=0.005`、每 4 个 physics step 执行一次确定性 action，
+并拒绝缺少 29 个同名 joint 或 position actuator 的模型。由于当前服务器尚未提供
+经确认的 MJCF，此入口完成了代码边界但尚未计入本次运行通过项。
+
+## 6. 导出 ONNX
+
+```bash
+/isaac-sim/python.sh scripts/export_onnx.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_v1/latest.pt \
+  --output /root/gpufree-data/stablemimic_replicate/runs/joint_v1/actor.onnx
+```
+
+导出结果只有 `actor_observation` 和 `gate_observation` 两个部署输入，输出
+`joint_target_mean` 与 `gate_weights`。旁边的 `actor.json` 固化 joint order、维度、
+50 Hz 和 config SHA-256。
+
+数值一致性检查：
+
+```bash
+/isaac-sim/python.sh scripts/verify_onnx.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_v1/latest.pt \
+  --onnx /root/gpufree-data/stablemimic_replicate/runs/joint_v1/actor.onnx
+```
+
+## 7. 输出文件
+
+```text
+RUN_DIR/
+├── metrics.jsonl          # 每次 PPO iteration 的指标
+├── checkpoint_XXXXXX.pt   # 按配置间隔保存
+├── latest.pt              # 本次命令结束时保存
+├── eval.json              # 普通评估
+├── push_eval.json         # matched-push 评估
+├── actor.onnx             # 部署 Actor
+└── actor.json             # 部署 metadata / joint order / config hash
+```
+
+数据集、训练输出和模型均放在 `gpu_data` 数据盘；Git 仓库只保存代码、配置、测试和
+小型视觉验收证据。
+
+## 8. 已知环境行为
+
+当前 Isaac Sim 5.1 容器偶尔会在 `SimulationApp.close()` 阻塞。CLI 在成功输出
+`[PASS]` 后使用 15 秒 watchdog 释放进程；异常路径会先打印 traceback 并返回非零，
+不会再被 Isaac 的退出状态掩盖。
