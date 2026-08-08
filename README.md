@@ -8,7 +8,7 @@ The repository is currently at **Gate 0 / Phase 1**:
 
 - repository and public dataset audit completed;
 - simulator-independent LAFAN1 CSV loading and continuous-time sampling foundation;
-- Isaac Lab G1 29-DoF reference visualizer;
+- Isaac Lab G1 29-DoF reference visualizer and deterministic offscreen validation;
 - no PPO training, recovery policy, mixture of experts, or deployment code yet.
 
 ## Fact boundary
@@ -59,6 +59,20 @@ PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/visualize_lafan1_g1.py
   --file /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1/dance1_subject1.csv \
   --headless --max-steps 5
 ```
+
+Render deterministic two-view evidence at explicit source times:
+
+```bash
+cd /root/gpufree-share/stablemimic_replicate
+PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/render_lafan1_g1.py \
+  --file /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1/fallAndGetUp1_subject1.csv \
+  --times 4.5,5.7,6.5,8.5,10.0 \
+  --output-dir /root/gpufree-data/stablemimic_replicate/visualizations/phase1 \
+  --headless --enable_cameras --width 512 --height 512
+```
+
+The committed visual evidence and acceptance record are in
+[`docs/PHASE1_VISUAL_VALIDATION.md`](docs/PHASE1_VISUAL_VALIDATION.md).
 
 The audited Isaac Sim 5.1 container can block during application shutdown after successful simulation. CLI utilities include a documented 15-second shutdown watchdog so completed runs terminate and release the GPU.
 

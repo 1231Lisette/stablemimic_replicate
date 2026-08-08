@@ -38,5 +38,14 @@ def close_simulation_app(
             os._exit(forced_exit_code)
 
     threading.Thread(target=watchdog, name="isaac-close-watchdog", daemon=True).start()
-    application.close()
-    close_finished.set()
+    try:
+        application.close()
+    except SystemExit as error:
+        # Some Isaac close paths raise SystemExit(0). Do not let that override
+        # an exception that occurred before shutdown.
+        close_finished.set()
+        if forced_exit_code:
+            raise SystemExit(forced_exit_code) from error
+        raise
+    else:
+        close_finished.set()

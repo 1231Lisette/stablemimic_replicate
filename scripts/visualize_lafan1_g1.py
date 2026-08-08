@@ -36,8 +36,8 @@ from isaaclab.assets import Articulation
 from isaaclab.sim import SimulationContext
 from isaaclab_assets import G1_29DOF_CFG
 
-from stablemimic.motion.lafan1 import LAFAN1_G1_JOINT_NAMES, load_lafan1_csv
-from stablemimic.sim import close_simulation_app
+from stablemimic.motion.lafan1 import load_lafan1_csv
+from stablemimic.sim import build_lafan1_g1_joint_mapping, close_simulation_app
 
 
 def xyzw_to_wxyz(value) -> list[float]:
@@ -46,24 +46,11 @@ def xyzw_to_wxyz(value) -> list[float]:
 
 def validate_joint_mapping(robot: Articulation) -> list[int]:
     simulator_names = list(robot.joint_names)
-    expected = list(LAFAN1_G1_JOINT_NAMES)
-    missing = sorted(set(expected) - set(simulator_names))
-    extra = sorted(set(simulator_names) - set(expected))
-    duplicates = sorted(name for name in expected if simulator_names.count(name) != 1)
-    unsupported_extra = sorted(
-        name for name in extra if not (name.startswith("left_hand_") or name.startswith("right_hand_"))
-    )
-    if missing or duplicates or unsupported_extra:
-        raise RuntimeError(
-            "Isaac Lab G1 asset does not contain an unambiguous LAFAN1 body-joint subset. "
-            f"missing={missing}, duplicates={duplicates}, unsupported_extra={unsupported_extra}, "
-            f"simulator_count={len(simulator_names)}"
-        )
-    mapping = [simulator_names.index(name) for name in expected]
+    result = build_lafan1_g1_joint_mapping(simulator_names)
     print(f"[INFO] LAFAN1 29-joint subset validated in {len(simulator_names)}-joint Isaac articulation.")
-    print(f"[INFO] Extra joints remain at their default state: {extra}")
-    print(f"[INFO] CSV-to-simulator joint permutation: {mapping}")
-    return mapping
+    print(f"[INFO] Extra joints remain at their default state: {list(result.extra_hand_joints)}")
+    print(f"[INFO] CSV-to-simulator joint permutation: {list(result.csv_to_sim)}")
+    return list(result.csv_to_sim)
 
 
 def main() -> None:
