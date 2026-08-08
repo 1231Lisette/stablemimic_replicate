@@ -1,0 +1,9 @@
+dataset_root: /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
+source_fps: 30.0
+policy_frequency_hz: 50.0
+tracking_glob: dance*.csv
+recovery_glob: fallAndGetUp*.csv
+root_position_order: [x, y, z]
+root_quaternion_order: [qx, qy, qz, qw]
+coordinate_system: right_handed_z_up
+joint_position_count: 29

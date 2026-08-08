@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Large or generated runtime artifacts live on gpufree-data.
+data/
+datasets/
+logs/
+checkpoints/
+cache/
+outputs/
+
+# Isaac Sim runtime artifacts.
+kit/logs/
+omni.server.log
