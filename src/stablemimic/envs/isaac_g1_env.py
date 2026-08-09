@@ -138,7 +138,7 @@ class StableMimicG1Env(DirectRLEnv):
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._previous_actions.copy_(self._actions)
-        self._actions.copy_(actions.clamp(-1.0, 1.0))
+        self._actions.copy_(actions.clamp(-self.cfg.action_clip, self.cfg.action_clip))
         self._processed_actions = (
             self._robot.data.default_joint_pos[:, self._body_joint_ids]
             + self.cfg.action_scale * self._actions

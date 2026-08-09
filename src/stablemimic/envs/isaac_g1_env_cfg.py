@@ -21,6 +21,7 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     stablemimic_config_path: str = "configs/stablemimic_g1.yaml"
     data_root: str = "/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1"
     action_scale: float = 0.5
+    action_clip: float = 100.0
     tracking_reset_probability: float = 0.5
     transition_duration_s: float = 1.5
     recovery_error_timeout_s: float = 2.0

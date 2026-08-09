@@ -125,6 +125,10 @@ def main() -> None:
         actor_obs, gate_obs, _ = agent.normalized(observations.actor, observations.gate, observations.critic)
         with torch.no_grad():
             action, _, _, policy = agent.actor.act(actor_obs, gate_obs, deterministic=True)
+        action = action.clamp(
+            -config.environment.action_clip,
+            config.environment.action_clip,
+        )
         target = default_joint_position + config.environment.action_scale * action
         data.ctrl[actuator_ids] = target[0].numpy()
         for _ in range(4):

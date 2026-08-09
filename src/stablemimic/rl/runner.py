@@ -76,6 +76,7 @@ class StableMimicRunner:
             terminated_samples = 0
             truncated_samples = 0
             clipped_action_elements = 0
+            unit_action_exceed_elements = 0
             action_elements = 0
             gate_weight_sum = torch.zeros(2, device=self.device)
             for _step in range(self.config.ppo.rollout_steps):
@@ -111,7 +112,10 @@ class StableMimicRunner:
                 transition_samples += int(transition_mask.sum())
                 terminated_samples += int(terminated.sum())
                 truncated_samples += int(truncated.sum())
-                clipped_action_elements += int((actions.abs() > 1.0).sum())
+                clipped_action_elements += int(
+                    (actions.abs() > self.config.environment.action_clip).sum()
+                )
+                unit_action_exceed_elements += int((actions.abs() > 1.0).sum())
                 action_elements += actions.numel()
                 gate_weight_sum += policy_output.gate_weights.sum(0)
                 actor_raw, critic_raw = next_observation["policy"], next_observation["critic"]
@@ -146,6 +150,9 @@ class StableMimicRunner:
                     self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
                 ),
                 "action_clip_fraction": clipped_action_elements / max(action_elements, 1),
+                "unit_action_exceed_fraction": unit_action_exceed_elements / max(
+                    action_elements, 1
+                ),
                 "mean_tracking_gate_weight": float(gate_weight_sum[0]) / max(
                     self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
                 ),

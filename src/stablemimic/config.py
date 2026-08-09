@@ -37,6 +37,7 @@ class EnvironmentCfg:
     physics_dt: float = 0.005
     decimation: int = 4
     action_scale: float = 0.5
+    action_clip: float = 100.0
     tracking_reset_probability: float = 0.5
     transition_duration_s: float = 1.5
     recovery_error_timeout_s: float = 2.0
@@ -107,6 +108,8 @@ def load_config(path: str | Path) -> StableMimicCfg:
     env = EnvironmentCfg(**raw["environment"])
     if abs(env.physics_dt * env.decimation - 0.02) > 1.0e-12:
         raise ValueError("StableMimic policy step must be 0.02 s (50 Hz)")
+    if env.action_clip <= 0.0:
+        raise ValueError("environment.action_clip must be positive")
     reward_raw = raw["reward"]
     reward = RewardCfg(
         **{name: _kernel(reward_raw[name]) for name in (

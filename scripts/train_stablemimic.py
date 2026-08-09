@@ -52,6 +52,7 @@ def main() -> None:
     env_cfg.sim.dt = repository_config.environment.physics_dt
     env_cfg.decimation = repository_config.environment.decimation
     env_cfg.action_scale = repository_config.environment.action_scale
+    env_cfg.action_clip = repository_config.environment.action_clip
     env_cfg.tracking_reset_probability = {
         "tracking": 1.0,
         "recovery": 0.0,

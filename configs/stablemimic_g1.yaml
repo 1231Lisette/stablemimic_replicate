@@ -10,6 +10,7 @@ environment:
   physics_dt: 0.005
   decimation: 4
   action_scale: 0.5          # reproduction choice
+  action_clip: 100.0         # reproduction choice; effectively unbounded Gaussian action
   tracking_reset_probability: 0.5
   transition_duration_s: 1.5
   recovery_error_timeout_s: 2.0

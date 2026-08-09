@@ -50,6 +50,7 @@ def main() -> None:
     env_cfg.sim.dt = config.environment.physics_dt
     env_cfg.decimation = config.environment.decimation
     env_cfg.action_scale = config.environment.action_scale
+    env_cfg.action_clip = config.environment.action_clip
     env_cfg.tracking_reset_probability = (
         1.0 if args_cli.matched_pushes else config.environment.tracking_reset_probability
     )
@@ -81,6 +82,7 @@ def main() -> None:
     recovery_samples = torch.zeros((), device=env.device)
     transition_samples = torch.zeros((), device=env.device)
     clipped_action_elements = torch.zeros((), device=env.device)
+    unit_action_exceed_elements = torch.zeros((), device=env.device)
     push_start, push_steps = 50, int(round(0.2 / env.step_dt))
     push_forces = torch.zeros(env.num_envs, 3, device=env.device)
     if args_cli.matched_pushes:
@@ -111,7 +113,8 @@ def main() -> None:
         tracking_samples += tracking_mask.sum()
         recovery_samples += recovery_mask.sum()
         transition_samples += transition_mask.sum()
-        clipped_action_elements += (action.abs() > 1.0).sum()
+        clipped_action_elements += (action.abs() > config.environment.action_clip).sum()
+        unit_action_exceed_elements += (action.abs() > 1.0).sum()
     metrics = {
         "steps": args_cli.steps,
         "num_envs": env.num_envs,
@@ -128,6 +131,9 @@ def main() -> None:
         "transition_sample_fraction": float(transition_samples / (args_cli.steps * env.num_envs)),
         "action_clip_fraction": float(
             clipped_action_elements / (args_cli.steps * env.num_envs * 29)
+        ),
+        "unit_action_exceed_fraction": float(
+            unit_action_exceed_elements / (args_cli.steps * env.num_envs * 29)
         ),
         "matched_push_protocol": bool(args_cli.matched_pushes),
         "push_force_range_newtons": [525.0, 575.0] if args_cli.matched_pushes else None,

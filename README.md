@@ -169,6 +169,10 @@ Recovery Actor 看不到 get-up reference；hidden successor 只用于 Critic �
 29-D mean，Gate 只看 proprioceptive history，并连续 soft fusion，不存在硬编码
 `if fallen` policy switch。
 
+Actor 按论文描述使用共享标量方差的高斯动作。`environment.action_clip` 是论文未公布的
+复现选项，默认 `100.0`，在正常范围内等效为不截断，确保 PPO 保存的采样动作与 simulator
+实际执行动作一致；部署端仍按 metadata 中的同一阈值执行安全裁剪。
+
 ## 4. 续训
 
 ```bash
