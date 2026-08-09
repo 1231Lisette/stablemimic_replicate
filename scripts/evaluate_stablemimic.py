@@ -83,6 +83,17 @@ def main() -> None:
     transition_samples = torch.zeros((), device=env.device)
     clipped_action_elements = torch.zeros((), device=env.device)
     unit_action_exceed_elements = torch.zeros((), device=env.device)
+    event_counts = {
+        name: torch.zeros((), device=env.device)
+        for name in (
+            "recovery_success",
+            "recovery_failure",
+            "transition_completed",
+            "sequence_termination",
+            "unrecoverable_fall_termination",
+            "timeout",
+        )
+    }
     push_start, push_steps = 50, int(round(0.2 / env.step_dt))
     push_forces = torch.zeros(env.num_envs, 3, device=env.device)
     if args_cli.matched_pushes:
@@ -115,6 +126,8 @@ def main() -> None:
         transition_samples += transition_mask.sum()
         clipped_action_elements += (action.abs() > config.environment.action_clip).sum()
         unit_action_exceed_elements += (action.abs() > 1.0).sum()
+        for name in event_counts:
+            event_counts[name] += env.latest_events[name].sum()
     metrics = {
         "steps": args_cli.steps,
         "num_envs": env.num_envs,
@@ -134,6 +147,13 @@ def main() -> None:
         ),
         "unit_action_exceed_fraction": float(
             unit_action_exceed_elements / (args_cli.steps * env.num_envs * 29)
+        ),
+        **{f"{name}_count": int(value) for name, value in event_counts.items()},
+        "recovery_successes_per_1000_recovery_steps": float(
+            1000.0 * event_counts["recovery_success"] / recovery_samples.clamp_min(1.0)
+        ),
+        "recovery_failures_per_1000_recovery_steps": float(
+            1000.0 * event_counts["recovery_failure"] / recovery_samples.clamp_min(1.0)
         ),
         "matched_push_protocol": bool(args_cli.matched_pushes),
         "push_force_range_newtons": [525.0, 575.0] if args_cli.matched_pushes else None,

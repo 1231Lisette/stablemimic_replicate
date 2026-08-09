@@ -79,6 +79,17 @@ class StableMimicRunner:
             unit_action_exceed_elements = 0
             action_elements = 0
             gate_weight_sum = torch.zeros(2, device=self.device)
+            event_counts = {
+                name: 0
+                for name in (
+                    "recovery_success",
+                    "recovery_failure",
+                    "transition_completed",
+                    "sequence_termination",
+                    "unrecoverable_fall_termination",
+                    "timeout",
+                )
+            }
             for _step in range(self.config.ppo.rollout_steps):
                 self.agent.update_normalizers(actor_raw, gate_raw, critic_raw)
                 actor_obs, gate_obs, critic_obs = self.agent.normalized(actor_raw, gate_raw, critic_raw)
@@ -118,6 +129,8 @@ class StableMimicRunner:
                 unit_action_exceed_elements += int((actions.abs() > 1.0).sum())
                 action_elements += actions.numel()
                 gate_weight_sum += policy_output.gate_weights.sum(0)
+                for name in event_counts:
+                    event_counts[name] += int(self.env.unwrapped.latest_events[name].sum())
                 actor_raw, critic_raw = next_observation["policy"], next_observation["critic"]
                 gate_raw = self.env.unwrapped.gate_observations
             with torch.no_grad():
@@ -159,6 +172,7 @@ class StableMimicRunner:
                 "mean_recovery_gate_weight": float(gate_weight_sum[1]) / max(
                     self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
                 ),
+                **{f"{name}_count": count for name, count in event_counts.items()},
                 "wall_seconds": time.perf_counter() - started,
                 **asdict(metrics),
             }

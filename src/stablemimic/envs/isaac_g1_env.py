@@ -77,6 +77,17 @@ class StableMimicG1Env(DirectRLEnv):
         self._phase_failed = torch.zeros_like(self._sequence_done)
         self._latest_gate_observation = torch.zeros(self.num_envs, 372, device=self.device)
         self._latest_gate_target = torch.zeros(self.num_envs, 2, device=self.device)
+        self._latest_events = {
+            name: torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            for name in (
+                "recovery_success",
+                "recovery_failure",
+                "transition_completed",
+                "sequence_termination",
+                "unrecoverable_fall_termination",
+                "timeout",
+            )
+        }
         self._tracking_sample = self._motions.tracking.sample(self._tracking_motion_ids, self._tracking_times)
         self._recovery_sample = self._motions.recovery.sample(self._recovery_motion_ids, self._recovery_times)
         self._active_sample = self._tracking_sample
@@ -99,6 +110,11 @@ class StableMimicG1Env(DirectRLEnv):
     @property
     def phases(self) -> torch.Tensor:
         return self._phase_state.phase
+
+    @property
+    def latest_events(self) -> dict[str, torch.Tensor]:
+        """Per-environment events produced by the most recent policy step."""
+        return self._latest_events
 
     def training_state(self) -> dict[str, torch.Tensor]:
         return {"recovery_failure_histogram": self._recovery_sampler.failures.detach().cpu()}
@@ -307,6 +323,11 @@ class StableMimicG1Env(DirectRLEnv):
         began_transition = (old_phase == int(MotionPhase.RECOVERY)) & (
             self._phase_state.phase == int(MotionPhase.TRANSITION)
         )
+        completed_transition = (old_phase == int(MotionPhase.TRANSITION)) & (
+            self._phase_state.phase == int(MotionPhase.TRACKING)
+        )
+        self._latest_events["recovery_success"].copy_(began_transition)
+        self._latest_events["transition_completed"].copy_(completed_transition)
         if began_transition.any():
             tracking_root = self._tracking_sample.root_pos[began_transition, :2]
             robot_xy = self._robot.data.root_pos_w[began_transition, :2]
@@ -342,6 +363,10 @@ class StableMimicG1Env(DirectRLEnv):
         tracking = self._phase_state.phase == int(MotionPhase.TRACKING)
         unrecoverable_fall = tracking & (self._robot.data.root_pos_w[:, 2] < 0.18)
         terminated = self._phase_failed | self._sequence_done | unrecoverable_fall
+        self._latest_events["recovery_failure"].copy_(self._phase_failed)
+        self._latest_events["sequence_termination"].copy_(self._sequence_done)
+        self._latest_events["unrecoverable_fall_termination"].copy_(unrecoverable_fall)
+        self._latest_events["timeout"].copy_(time_out)
         return terminated, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None) -> None:
