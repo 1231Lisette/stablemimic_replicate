@@ -74,6 +74,13 @@ def main() -> None:
     total_reward = torch.zeros(env.num_envs, device=env.device)
     terminations = torch.zeros(env.num_envs, device=env.device)
     gate_sum = torch.zeros(env.num_envs, 2, device=env.device)
+    target_sum = torch.zeros(2, device=env.device)
+    tracking_reward_sum = torch.zeros((), device=env.device)
+    recovery_reward_sum = torch.zeros((), device=env.device)
+    tracking_samples = torch.zeros((), device=env.device)
+    recovery_samples = torch.zeros((), device=env.device)
+    transition_samples = torch.zeros((), device=env.device)
+    clipped_action_elements = torch.zeros((), device=env.device)
     push_start, push_steps = 50, int(round(0.2 / env.step_dt))
     push_forces = torch.zeros(env.num_envs, 3, device=env.device)
     if args_cli.matched_pushes:
@@ -88,12 +95,23 @@ def main() -> None:
         actor, gate, _critic = agent.normalized(
             observation["policy"], env.gate_observations, observation["critic"]
         )
+        gate_target = env.gate_targets.clone()
         with torch.no_grad():
             action, _, _, policy = agent.actor.act(actor, gate, deterministic=True)
         observation, reward, terminated, truncated, _ = env.step(action)
+        tracking_mask = gate_target[:, 0] == 1.0
+        recovery_mask = gate_target[:, 1] == 1.0
+        transition_mask = ~(tracking_mask | recovery_mask)
         total_reward += reward
         terminations += (terminated | truncated).float()
         gate_sum += policy.gate_weights
+        target_sum += gate_target.sum(0)
+        tracking_reward_sum += reward[tracking_mask].sum()
+        recovery_reward_sum += reward[recovery_mask].sum()
+        tracking_samples += tracking_mask.sum()
+        recovery_samples += recovery_mask.sum()
+        transition_samples += transition_mask.sum()
+        clipped_action_elements += (action.abs() > 1.0).sum()
     metrics = {
         "steps": args_cli.steps,
         "num_envs": env.num_envs,
@@ -101,6 +119,16 @@ def main() -> None:
         "mean_terminations": float(terminations.mean()),
         "mean_tracking_gate_weight": float((gate_sum[:, 0] / args_cli.steps).mean()),
         "mean_recovery_gate_weight": float((gate_sum[:, 1] / args_cli.steps).mean()),
+        "mean_tracking_gate_target": float(target_sum[0] / (args_cli.steps * env.num_envs)),
+        "mean_recovery_gate_target": float(target_sum[1] / (args_cli.steps * env.num_envs)),
+        "tracking_mean_reward": float(tracking_reward_sum / tracking_samples.clamp_min(1.0)),
+        "recovery_mean_reward": float(recovery_reward_sum / recovery_samples.clamp_min(1.0)),
+        "tracking_sample_fraction": float(tracking_samples / (args_cli.steps * env.num_envs)),
+        "recovery_sample_fraction": float(recovery_samples / (args_cli.steps * env.num_envs)),
+        "transition_sample_fraction": float(transition_samples / (args_cli.steps * env.num_envs)),
+        "action_clip_fraction": float(
+            clipped_action_elements / (args_cli.steps * env.num_envs * 29)
+        ),
         "matched_push_protocol": bool(args_cli.matched_pushes),
         "push_force_range_newtons": [525.0, 575.0] if args_cli.matched_pushes else None,
         "push_duration_seconds": 0.2 if args_cli.matched_pushes else None,

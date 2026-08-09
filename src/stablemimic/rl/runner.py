@@ -68,12 +68,24 @@ class StableMimicRunner:
         for _ in range(iterations):
             started = time.perf_counter()
             episode_reward = 0.0
+            tracking_reward_sum = 0.0
+            recovery_reward_sum = 0.0
+            tracking_samples = 0
+            recovery_samples = 0
+            transition_samples = 0
+            terminated_samples = 0
+            truncated_samples = 0
+            clipped_action_elements = 0
+            action_elements = 0
+            gate_weight_sum = torch.zeros(2, device=self.device)
             for _step in range(self.config.ppo.rollout_steps):
                 self.agent.update_normalizers(actor_raw, gate_raw, critic_raw)
                 actor_obs, gate_obs, critic_obs = self.agent.normalized(actor_raw, gate_raw, critic_raw)
                 gate_target = self.env.unwrapped.gate_targets.clone()
                 with torch.no_grad():
-                    actions, log_probability, _, _ = self.agent.actor.act(actor_obs, gate_obs)
+                    actions, log_probability, _, policy_output = self.agent.actor.act(
+                        actor_obs, gate_obs
+                    )
                     values = self.agent.critic(critic_obs)
                 next_observation, reward, terminated, truncated, _ = self.env.step(actions)
                 done = terminated | truncated
@@ -89,6 +101,19 @@ class StableMimicRunner:
                     gate_target,
                 )
                 episode_reward += float(reward.mean())
+                tracking_mask = gate_target[:, 0] == 1.0
+                recovery_mask = gate_target[:, 1] == 1.0
+                transition_mask = ~(tracking_mask | recovery_mask)
+                tracking_reward_sum += float(reward[tracking_mask].sum())
+                recovery_reward_sum += float(reward[recovery_mask].sum())
+                tracking_samples += int(tracking_mask.sum())
+                recovery_samples += int(recovery_mask.sum())
+                transition_samples += int(transition_mask.sum())
+                terminated_samples += int(terminated.sum())
+                truncated_samples += int(truncated.sum())
+                clipped_action_elements += int((actions.abs() > 1.0).sum())
+                action_elements += actions.numel()
+                gate_weight_sum += policy_output.gate_weights.sum(0)
                 actor_raw, critic_raw = next_observation["policy"], next_observation["critic"]
                 gate_raw = self.env.unwrapped.gate_observations
             with torch.no_grad():
@@ -103,6 +128,30 @@ class StableMimicRunner:
                 "iteration": self.iteration,
                 "mean_step_reward": episode_reward / self.config.ppo.rollout_steps,
                 "policy_std": float(self.agent.actor.log_std.exp()),
+                "tracking_mean_reward": tracking_reward_sum / max(tracking_samples, 1),
+                "recovery_mean_reward": recovery_reward_sum / max(recovery_samples, 1),
+                "tracking_sample_fraction": tracking_samples / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
+                "recovery_sample_fraction": recovery_samples / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
+                "transition_sample_fraction": transition_samples / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
+                "termination_fraction": terminated_samples / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
+                "truncation_fraction": truncated_samples / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
+                "action_clip_fraction": clipped_action_elements / max(action_elements, 1),
+                "mean_tracking_gate_weight": float(gate_weight_sum[0]) / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
+                "mean_recovery_gate_weight": float(gate_weight_sum[1]) / max(
+                    self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
+                ),
                 "wall_seconds": time.perf_counter() - started,
                 **asdict(metrics),
             }
