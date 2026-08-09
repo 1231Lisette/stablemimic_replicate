@@ -44,6 +44,23 @@ routing consistency，transition 样本使用 `0.01` expert-output alignment。�
 若初始高度不低于 `0.8 * command_height`，仅把 Gate 监督改为 Tracking；它仍保留
 Recovery reset、Recovery reward 与 privileged recovery reference，避免改变训练分布。
 
+Recovery 的三个相似度用途已经明确分开，不能互相替代：
+
+- `active reference similarity`：当前状态对正在播放的 recovery reference successor 的
+  六类 whole-body Gaussian reward 加权归一值，越接近 `1` 表示越像当前目标帧；它用于
+  imitation reward，并以 `recovery_failure_similarity_threshold: 0.05` 判断是否连续严重
+  偏离目标，持续 2 秒才判 Recovery 失败；
+- `terminal reference similarity`：当前状态与所采样 get-up 序列最后一帧的相似度；达到
+  `recovery_terminal_similarity_threshold: 0.70` 才进入 1.5 秒 Transition；
+- `tracking_resumption_similarity_threshold: 0.70`：只用于确定性评估中的“恢复后重新跟踪”
+  统计，不参与训练状态机。
+
+论文公开了“持续 active-target error”和“terminal get-up reference match”这两个不同事件，
+但没有公开上述阈值，因此 `0.05 / 0.70 / 0.70` 均为可配置的 reproduction choice。
+策略 log-probability 仍对 29 个动作维度求和；论文给出的 entropy 系数 `0.05` 则作用在
+每动作维平均 entropy 上，避免相同系数被动作维数额外放大 29 倍。论文没有公布 entropy
+的维度 reduction，因此这一 reduction 也明确属于 reproduction choice。
+
 ## 信息边界
 
 | 信息 | Expert | Gate | Critic | Reset/Reward | 部署 |
@@ -197,8 +214,9 @@ Actor 按论文描述使用共享标量方差的高斯动作。`environment.acti
 
 Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iteration 和配置快照。
 
-注意：奖励时序与 auxiliary loss 语义修改后，旧的 `joint_ab_std_020` iteration-500
-checkpoint 只保留作诊断证据，不应续训。请从随机初始化建立新的 run directory。
+注意：奖励/phase/entropy 语义修改后，旧的 `joint_ab_std_020` 与
+`joint_paper_aligned_v1` checkpoint 只保留作诊断证据，不应续训。请从随机初始化建立新的
+run directory。
 
 ## 5. 确定性评估
 
@@ -235,7 +253,8 @@ matched push；不会混入 Recovery reset。
 JSON 中的 `paper_fall_count` 使用论文明确给出的判据：root/pelvis 高度低于 0.5 m，
 或 root tilt 大于 60°。论文没有公开“恢复后重新跟踪”的精确阈值，因此本复现把
 `tracking_resumption_count` 定义为连续 0.5 秒同时满足：高度至少为命令高度的 80%、
-tilt 不超过 30°、similarity 达到 recovery threshold、且 Tracking Gate 权重至少 0.5。
+tilt 不超过 30°、active tracking similarity 达到
+`tracking_resumption_similarity_threshold`、且 Tracking Gate 权重至少 0.5。
 该定义也会原样写入 metrics JSON。若只想复现训练期重置行为，可额外传入
 `--enable-early-termination`。
 

@@ -50,10 +50,40 @@ class StableMimicTorchTests(unittest.TestCase):
         ids = torch.arange(2)
         state.reset(ids, torch.tensor([False, True]))
         self.assertEqual(state.phase.tolist(), [MotionPhase.TRACKING, MotionPhase.RECOVERY])
-        state.update(torch.tensor([0.0, 1.0]), torch.zeros(2), 0.02, 0.8)
+        state.update(
+            torch.tensor([0.0, 1.0]), torch.tensor([0.0, 0.8]),
+            0.02, 0.05, 0.7,
+        )
         self.assertEqual(int(state.phase[1]), MotionPhase.TRANSITION)
-        state.update(torch.zeros(2), torch.zeros(2), 0.75, 0.8)
+        state.update(torch.zeros(2), torch.zeros(2), 0.75, 0.05, 0.7)
         self.assertTrue(torch.allclose(state.gate_target()[1], torch.tensor([0.5, 0.5])))
+
+    def test_phase_separates_active_failure_from_terminal_success(self) -> None:
+        from stablemimic.core.phases import MotionPhase, PhaseState
+
+        state = PhaseState.create(1, "cpu", error_timeout=0.04)
+        ids = torch.arange(1)
+        state.reset(ids, torch.ones(1, dtype=torch.bool))
+        failed = state.update(
+            torch.tensor([0.9]), torch.tensor([0.2]), 0.02, 0.05, 0.7
+        )
+        self.assertFalse(bool(failed[0]))
+        self.assertEqual(int(state.phase[0]), MotionPhase.RECOVERY)
+        failed = state.update(
+            torch.tensor([0.01]), torch.tensor([0.2]), 0.02, 0.05, 0.7
+        )
+        self.assertFalse(bool(failed[0]))
+        failed = state.update(
+            torch.tensor([0.01]), torch.tensor([0.2]), 0.02, 0.05, 0.7
+        )
+        self.assertTrue(bool(failed[0]))
+
+        state.reset(ids, torch.ones(1, dtype=torch.bool))
+        failed = state.update(
+            torch.tensor([0.01]), torch.tensor([0.8]), 0.02, 0.05, 0.7
+        )
+        self.assertFalse(bool(failed[0]))
+        self.assertEqual(int(state.phase[0]), MotionPhase.TRANSITION)
 
     def test_recovered_like_reset_can_override_recovery_gate_target(self) -> None:
         from stablemimic.core.phases import PhaseState
@@ -144,3 +174,6 @@ class StableMimicTorchTests(unittest.TestCase):
         storage.compute_returns(torch.zeros(4), 0.99, 0.95)
         metrics = ppo.update(storage)
         self.assertTrue(all(torch.isfinite(torch.tensor(value)) for value in metrics.__dict__.values()))
+        # PPO reports entropy per action dimension. A summed 29-D entropy would
+        # be about 21 at this initial std and would recreate the old scaling bug.
+        self.assertLess(abs(metrics.entropy), 2.0)

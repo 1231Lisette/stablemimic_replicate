@@ -84,7 +84,9 @@ class PPO:
                     F.mse_loss(output.tracking_mean[mixed], output.recovery_mean[mixed])
                     if mixed.any() else output.mean.sum() * 0.0
                 )
-                entropy_mean = entropy.mean()
+                # The paper gives 0.05 but not the action-dimension reduction.
+                # Mean reduction prevents the coefficient from scaling 29-fold.
+                entropy_mean = entropy.mean() / batch.action.shape[-1]
                 loss = (
                     policy_loss
                     + self.config.value_loss_coefficient * value_loss

@@ -45,7 +45,11 @@ class StableMimicG1Env(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
         mapping = build_lafan1_g1_joint_mapping(self._robot.joint_names)
         self._body_joint_ids = torch.tensor(mapping.csv_to_sim, dtype=torch.long, device=self.device)
-        if self._robot.joint_names != self._reference_robot.joint_names:
+        if not (
+            self._robot.joint_names
+            == self._reference_robot.joint_names
+            == self._terminal_reference_robot.joint_names
+        ):
             raise ValueError("controlled and reference G1 articulations have different joint orders")
         torso_ids, _ = self._robot.find_bodies("torso_link")
         if len(torso_ids) != 1:
@@ -56,6 +60,7 @@ class StableMimicG1Env(DirectRLEnv):
         # CollisionPropertiesCfg. Keep the FK articulation far above the scene
         # and subtract this deterministic offset at the reward boundary.
         self._reference_z_offset = 100.0
+        self._terminal_reference_z_offset = 200.0
         self._recovery_sampler = FailureAdaptiveSampler(self._motions.recovery)
         self._phase_state = PhaseState.create(
             self.num_envs,
@@ -77,6 +82,7 @@ class StableMimicG1Env(DirectRLEnv):
         self._phase_failed = torch.zeros_like(self._sequence_done)
         self._gate_tracking_override = torch.zeros_like(self._sequence_done)
         self._latest_similarity = torch.zeros(self.num_envs, device=self.device)
+        self._latest_terminal_similarity = torch.zeros(self.num_envs, device=self.device)
         self._latest_gate_observation = torch.zeros(self.num_envs, 372, device=self.device)
         self._latest_gate_target = torch.zeros(self.num_envs, 2, device=self.device)
         self._latest_events = {
@@ -122,6 +128,10 @@ class StableMimicG1Env(DirectRLEnv):
     def latest_similarity(self) -> torch.Tensor:
         return self._latest_similarity
 
+    @property
+    def latest_terminal_similarity(self) -> torch.Tensor:
+        return self._latest_terminal_similarity
+
     def recovery_evaluation_state(self) -> dict[str, torch.Tensor]:
         """Expose paper-level fall signals without leaking them into the policy."""
         projected_gravity = self._robot.data.projected_gravity_b
@@ -131,6 +141,7 @@ class StableMimicG1Env(DirectRLEnv):
             "root_tilt_radians": root_tilt,
             "command_height": self._tracking_sample.root_pos[:, 2],
             "similarity": self._latest_similarity,
+            "terminal_similarity": self._latest_terminal_similarity,
         }
 
     def training_state(self) -> dict[str, torch.Tensor]:
@@ -158,8 +169,10 @@ class StableMimicG1Env(DirectRLEnv):
     def _setup_scene(self) -> None:
         self._robot = Articulation(self.cfg.robot)
         self._reference_robot = Articulation(self.cfg.reference_robot)
+        self._terminal_reference_robot = Articulation(self.cfg.terminal_reference_robot)
         self.scene.articulations["robot"] = self._robot
         self.scene.articulations["reference_robot"] = self._reference_robot
+        self.scene.articulations["terminal_reference_robot"] = self._terminal_reference_robot
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -217,6 +230,30 @@ class StableMimicG1Env(DirectRLEnv):
         self._reference_robot.write_root_pose_to_sim(root_pose)
         self._reference_robot.write_root_velocity_to_sim(root_velocity)
         self._reference_robot.write_joint_state_to_sim(joint_position, joint_velocity)
+
+    def _write_terminal_recovery_reference(self, env_ids: torch.Tensor) -> None:
+        """Write each selected get-up trajectory's terminal state for success detection."""
+        motion_ids = self._recovery_motion_ids[env_ids]
+        terminal = self._motions.recovery.sample(
+            motion_ids, self._motions.recovery.durations[motion_ids]
+        )
+        root_position = terminal.root_pos.clone()
+        root_position[:, :2] += self._recovery_xy_offset[env_ids]
+        root_position += self._terrain.env_origins[env_ids]
+        root_position[:, 2] += self._terminal_reference_z_offset
+        root_pose = torch.cat((root_position, xyzw_to_wxyz(terminal.root_quat_xyzw)), dim=-1)
+        root_velocity = torch.cat(
+            (terminal.root_lin_vel_world, terminal.root_ang_vel_world), dim=-1
+        )
+        joint_position = self._terminal_reference_robot.data.default_joint_pos[env_ids].clone()
+        joint_velocity = self._terminal_reference_robot.data.default_joint_vel[env_ids].clone()
+        joint_position[:, self._body_joint_ids] = terminal.joint_pos
+        joint_velocity[:, self._body_joint_ids] = terminal.joint_vel
+        self._terminal_reference_robot.write_root_pose_to_sim(root_pose, env_ids)
+        self._terminal_reference_robot.write_root_velocity_to_sim(root_velocity, env_ids)
+        self._terminal_reference_robot.write_joint_state_to_sim(
+            joint_position, joint_velocity, None, env_ids
+        )
 
     @staticmethod
     def _select_sample(
@@ -301,7 +338,13 @@ class StableMimicG1Env(DirectRLEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         current = self._kinematic_state(self._robot)
-        target = self._kinematic_state(self._reference_robot, reference=True)
+        target = self._kinematic_state(
+            self._reference_robot, reference_z_offset=self._reference_z_offset
+        )
+        terminal_target = self._kinematic_state(
+            self._terminal_reference_robot,
+            reference_z_offset=self._terminal_reference_z_offset,
+        )
         recovery = self._phase_state.phase == int(MotionPhase.RECOVERY)
         breakdown = whole_body_reward(
             current,
@@ -332,12 +375,24 @@ class StableMimicG1Env(DirectRLEnv):
             similarity,
         ).clamp(0.0, 1.0)
         self._latest_similarity.copy_(similarity)
+        terminal_breakdown = whole_body_reward(
+            current,
+            terminal_target,
+            torch.ones_like(recovery),
+            self._repository_config.reward,
+        )
+        terminal_similarity = (
+            terminal_breakdown.tracking
+            / (maximum * self._repository_config.reward.recovery_multiplier)
+        ).clamp(0.0, 1.0)
+        self._latest_terminal_similarity.copy_(terminal_similarity)
         old_phase = self._phase_state.phase.clone()
         self._phase_failed = self._phase_state.update(
             similarity,
-            1.0 - similarity,
+            terminal_similarity,
             self.step_dt,
-            self.cfg.recovery_success_threshold,
+            self.cfg.recovery_failure_similarity_threshold,
+            self.cfg.recovery_terminal_similarity_threshold,
         )
         self._recovery_sampler.record_failures(
             self._recovery_motion_ids, self._recovery_times, self._phase_failed
@@ -345,6 +400,9 @@ class StableMimicG1Env(DirectRLEnv):
         began_transition = (old_phase == int(MotionPhase.RECOVERY)) & (
             self._phase_state.phase == int(MotionPhase.TRANSITION)
         )
+        # A terminal match on the final recovery frame must enter Transition
+        # instead of being reset by the sequence-end flag from pre-physics.
+        self._sequence_done[began_transition] = False
         completed_transition = (old_phase == int(MotionPhase.TRANSITION)) & (
             self._phase_state.phase == int(MotionPhase.TRACKING)
         )
@@ -364,12 +422,14 @@ class StableMimicG1Env(DirectRLEnv):
             self._episode_sums[name] += value
         return reward
 
-    def _kinematic_state(self, robot: Articulation, reference: bool = False) -> KinematicState:
+    def _kinematic_state(
+        self, robot: Articulation, reference_z_offset: float = 0.0
+    ) -> KinematicState:
         root_position = robot.data.root_pos_w
         body_position = robot.data.body_pos_w
-        if reference:
+        if reference_z_offset:
             offset = torch.zeros_like(root_position)
-            offset[:, 2] = self._reference_z_offset
+            offset[:, 2] = reference_z_offset
             root_position = root_position - offset
             body_position = body_position - offset[:, None, :]
         return KinematicState(
@@ -402,6 +462,7 @@ class StableMimicG1Env(DirectRLEnv):
             env_ids = self._robot._ALL_INDICES
         self._robot.reset(env_ids)
         self._reference_robot.reset(env_ids)
+        self._terminal_reference_robot.reset(env_ids)
         super()._reset_idx(env_ids)
         count = env_ids.numel()
         self._actions[env_ids] = 0.0
@@ -425,6 +486,7 @@ class StableMimicG1Env(DirectRLEnv):
         origins = self._terrain.env_origins[env_ids]
         self._tracking_xy_offset[env_ids] = -tracking_sample.root_pos[:, :2]
         self._recovery_xy_offset[env_ids] = -recovery_sample.root_pos[:, :2]
+        self._write_terminal_recovery_reference(env_ids)
 
         root_position = reset_sample.root_pos.clone()
         root_position[:, :2] += torch.where(

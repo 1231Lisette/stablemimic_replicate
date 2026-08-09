@@ -60,7 +60,12 @@ def main() -> None:
     }[args_cli.mode]
     env_cfg.transition_duration_s = repository_config.environment.transition_duration_s
     env_cfg.recovery_error_timeout_s = repository_config.environment.recovery_error_timeout_s
-    env_cfg.recovery_success_threshold = repository_config.environment.recovery_success_threshold
+    env_cfg.recovery_failure_similarity_threshold = (
+        repository_config.environment.recovery_failure_similarity_threshold
+    )
+    env_cfg.recovery_terminal_similarity_threshold = (
+        repository_config.environment.recovery_terminal_similarity_threshold
+    )
     env_cfg.recovered_like_height_ratio = (
         repository_config.environment.recovered_like_height_ratio
     )

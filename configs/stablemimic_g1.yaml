@@ -14,7 +14,11 @@ environment:
   tracking_reset_probability: 0.5
   transition_duration_s: 1.5
   recovery_error_timeout_s: 2.0
-  recovery_success_threshold: 0.82  # reproduction choice
+  # Paper distinguishes persistent active-target error from terminal get-up
+  # matching but does not publish either threshold.
+  recovery_failure_similarity_threshold: 0.05  # reproduction choice
+  recovery_terminal_similarity_threshold: 0.70 # reproduction choice
+  tracking_resumption_similarity_threshold: 0.70 # evaluation-only reproduction choice
   recovered_like_height_ratio: 0.8
   observation_noise_std: 0.0       # reproduction choice; disabled baseline
 

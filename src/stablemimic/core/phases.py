@@ -47,20 +47,22 @@ class PhaseState:
         self.recovery_error_time[env_ids] = 0.0
 
     def update(
-        self, recovery_similarity: torch.Tensor, recovery_error: torch.Tensor, dt: float,
-        success_threshold: float,
+        self, active_similarity: torch.Tensor, terminal_similarity: torch.Tensor, dt: float,
+        failure_similarity_threshold: float, terminal_similarity_threshold: float,
     ) -> torch.Tensor:
         """Advance phases and return recovery-failure terminations."""
         recovery_mask = self.phase == int(MotionPhase.RECOVERY)
         transition_mask = self.phase == int(MotionPhase.TRANSITION)
-        success = recovery_mask & (recovery_similarity >= success_threshold)
+        success = recovery_mask & (terminal_similarity >= terminal_similarity_threshold)
         self.phase[success] = int(MotionPhase.TRANSITION)
         self.transition_time[success] = 0.0
+        self.recovery_error_time[success] = 0.0
 
-        bad = recovery_mask & (recovery_error > (1.0 - success_threshold))
+        still_recovering = recovery_mask & ~success
+        bad = still_recovering & (active_similarity < failure_similarity_threshold)
         self.recovery_error_time[bad] += dt
-        self.recovery_error_time[recovery_mask & ~bad] = 0.0
-        failed = recovery_mask & (self.recovery_error_time >= self.error_timeout)
+        self.recovery_error_time[still_recovering & ~bad] = 0.0
+        failed = still_recovering & (self.recovery_error_time >= self.error_timeout)
 
         self.transition_time[transition_mask] += dt
         completed = transition_mask & (self.transition_time >= self.transition_duration)

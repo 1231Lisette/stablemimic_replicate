@@ -42,7 +42,9 @@ class EnvironmentCfg:
     tracking_reset_probability: float = 0.5
     transition_duration_s: float = 1.5
     recovery_error_timeout_s: float = 2.0
-    recovery_success_threshold: float = 0.82
+    recovery_failure_similarity_threshold: float = 0.05
+    recovery_terminal_similarity_threshold: float = 0.70
+    tracking_resumption_similarity_threshold: float = 0.70
     recovered_like_height_ratio: float = 0.8
     observation_noise_std: float = 0.0
 
@@ -114,6 +116,14 @@ def load_config(path: str | Path) -> StableMimicCfg:
         raise ValueError("environment.action_clip must be positive")
     if env.recovered_like_height_ratio <= 0.0:
         raise ValueError("environment.recovered_like_height_ratio must be positive")
+    if not 0.0 <= env.recovery_failure_similarity_threshold < 1.0:
+        raise ValueError("environment.recovery_failure_similarity_threshold must be in [0, 1)")
+    if not 0.0 < env.recovery_terminal_similarity_threshold <= 1.0:
+        raise ValueError("environment.recovery_terminal_similarity_threshold must be in (0, 1]")
+    if not 0.0 < env.tracking_resumption_similarity_threshold <= 1.0:
+        raise ValueError("environment.tracking_resumption_similarity_threshold must be in (0, 1]")
+    if env.recovery_failure_similarity_threshold >= env.recovery_terminal_similarity_threshold:
+        raise ValueError("recovery failure similarity threshold must be below terminal threshold")
     reward_raw = raw["reward"]
     reward = RewardCfg(
         **{name: _kernel(reward_raw[name]) for name in (

@@ -10,6 +10,7 @@ import time
 import torch
 
 from stablemimic.config import StableMimicCfg
+from stablemimic.core.phases import MotionPhase
 from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCritic
 
 from .ppo import PPO
@@ -70,8 +71,12 @@ class StableMimicRunner:
             episode_reward = 0.0
             tracking_reward_sum = 0.0
             recovery_reward_sum = 0.0
+            recovery_active_similarity_sum = 0.0
+            recovery_terminal_similarity_sum = 0.0
+            recovery_terminal_threshold_samples = 0
             tracking_samples = 0
             recovery_samples = 0
+            recovery_phase_samples = 0
             transition_samples = 0
             terminated_samples = 0
             truncated_samples = 0
@@ -94,6 +99,7 @@ class StableMimicRunner:
                 self.agent.update_normalizers(actor_raw, gate_raw, critic_raw)
                 actor_obs, gate_obs, critic_obs = self.agent.normalized(actor_raw, gate_raw, critic_raw)
                 gate_target = self.env.unwrapped.gate_targets.clone()
+                phase_before = self.env.unwrapped.phases.clone()
                 with torch.no_grad():
                     actions, log_probability, _, policy_output = self.agent.actor.act(
                         actor_obs, gate_obs
@@ -115,11 +121,25 @@ class StableMimicRunner:
                 episode_reward += float(reward.mean())
                 tracking_mask = gate_target[:, 0] == 1.0
                 recovery_mask = gate_target[:, 1] == 1.0
+                recovery_phase_mask = phase_before == int(MotionPhase.RECOVERY)
                 transition_mask = ~(tracking_mask | recovery_mask)
                 tracking_reward_sum += float(reward[tracking_mask].sum())
                 recovery_reward_sum += float(reward[recovery_mask].sum())
+                recovery_active_similarity_sum += float(
+                    self.env.unwrapped.latest_similarity[recovery_phase_mask].sum()
+                )
+                recovery_terminal_similarity_sum += float(
+                    self.env.unwrapped.latest_terminal_similarity[recovery_phase_mask].sum()
+                )
+                recovery_terminal_threshold_samples += int(
+                    (
+                        self.env.unwrapped.latest_terminal_similarity[recovery_phase_mask]
+                        >= self.config.environment.recovery_terminal_similarity_threshold
+                    ).sum()
+                )
                 tracking_samples += int(tracking_mask.sum())
                 recovery_samples += int(recovery_mask.sum())
+                recovery_phase_samples += int(recovery_phase_mask.sum())
                 transition_samples += int(transition_mask.sum())
                 terminated_samples += int(terminated.sum())
                 truncated_samples += int(truncated.sum())
@@ -147,6 +167,15 @@ class StableMimicRunner:
                 "policy_std": float(self.agent.actor.log_std.exp()),
                 "tracking_mean_reward": tracking_reward_sum / max(tracking_samples, 1),
                 "recovery_mean_reward": recovery_reward_sum / max(recovery_samples, 1),
+                "recovery_active_similarity_mean": (
+                    recovery_active_similarity_sum / max(recovery_phase_samples, 1)
+                ),
+                "recovery_terminal_similarity_mean": (
+                    recovery_terminal_similarity_sum / max(recovery_phase_samples, 1)
+                ),
+                "recovery_terminal_threshold_fraction": (
+                    recovery_terminal_threshold_samples / max(recovery_phase_samples, 1)
+                ),
                 "tracking_sample_fraction": tracking_samples / max(
                     self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
                 ),

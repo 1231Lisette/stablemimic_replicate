@@ -60,7 +60,12 @@ def main() -> None:
     )
     env_cfg.transition_duration_s = config.environment.transition_duration_s
     env_cfg.recovery_error_timeout_s = config.environment.recovery_error_timeout_s
-    env_cfg.recovery_success_threshold = config.environment.recovery_success_threshold
+    env_cfg.recovery_failure_similarity_threshold = (
+        config.environment.recovery_failure_similarity_threshold
+    )
+    env_cfg.recovery_terminal_similarity_threshold = (
+        config.environment.recovery_terminal_similarity_threshold
+    )
     env_cfg.recovered_like_height_ratio = config.environment.recovered_like_height_ratio
     env_cfg.observation_noise_std = 0.0
     env_cfg.enable_early_termination = args_cli.enable_early_termination
@@ -146,7 +151,10 @@ def main() -> None:
             & ~recovered_after_fall
             & (recovery_state["root_height"] >= 0.8 * recovery_state["command_height"])
             & (recovery_state["root_tilt_radians"] <= resume_tilt_radians)
-            & (recovery_state["similarity"] >= config.environment.recovery_success_threshold)
+            & (
+                recovery_state["similarity"]
+                >= config.environment.tracking_resumption_similarity_threshold
+            )
             & (policy.gate_weights[:, 0] >= 0.5)
         )
         recovery_hold_steps = torch.where(
@@ -208,7 +216,8 @@ def main() -> None:
         "fall_definition": "root_height<0.5m or root_tilt>60deg (paper)",
         "tracking_resumption_definition": (
             "0.5s sustained: height>=0.8*command_height, tilt<=30deg, "
-            "similarity>=recovery_success_threshold, tracking_gate>=0.5 (reproduction choice)"
+            "similarity>=tracking_resumption_similarity_threshold, tracking_gate>=0.5 "
+            "(reproduction choice)"
         ),
         **{f"{name}_count": int(value) for name, value in event_counts.items()},
         "recovery_successes_per_1000_recovery_steps": float(

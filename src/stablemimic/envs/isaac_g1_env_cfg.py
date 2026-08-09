@@ -25,7 +25,8 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     tracking_reset_probability: float = 0.5
     transition_duration_s: float = 1.5
     recovery_error_timeout_s: float = 2.0
-    recovery_success_threshold: float = 0.82
+    recovery_failure_similarity_threshold: float = 0.05
+    recovery_terminal_similarity_threshold: float = 0.70
     recovered_like_height_ratio: float = 0.8
     observation_noise_std: float = 0.0
     enable_early_termination: bool = True
@@ -56,3 +57,10 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     reference_robot: ArticulationCfg = G1_29DOF_CFG.replace(prim_path="/World/envs/env_.*/ReferenceRobot")
     reference_robot.spawn.rigid_props.disable_gravity = True
     reference_robot.spawn.activate_contact_sensors = False
+    reference_robot.init_state.pos = (0.0, 0.0, 100.0)
+    terminal_reference_robot: ArticulationCfg = G1_29DOF_CFG.replace(
+        prim_path="/World/envs/env_.*/TerminalReferenceRobot"
+    )
+    terminal_reference_robot.spawn.rigid_props.disable_gravity = True
+    terminal_reference_robot.spawn.activate_contact_sensors = False
+    terminal_reference_robot.init_state.pos = (0.0, 0.0, 200.0)
