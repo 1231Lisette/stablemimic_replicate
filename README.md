@@ -172,6 +172,8 @@ Recovery Actor 看不到 get-up reference；hidden successor 只用于 Critic �
 Actor 按论文描述使用共享标量方差的高斯动作。`environment.action_clip` 是论文未公布的
 复现选项，默认 `100.0`，在正常范围内等效为不截断，确保 PPO 保存的采样动作与 simulator
 实际执行动作一致；部署端仍按 metadata 中的同一阈值执行安全裁剪。
+论文同样没有公布方差初始化；配置采用 `model.initial_std: 0.2`，避免随机初始化阶段大比例
+动作越过单位幅值并使正则惩罚淹没 imitation reward。训练中该共享标量仍由 PPO 自由学习。
 
 ## 4. 续训
 

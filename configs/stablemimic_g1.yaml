@@ -49,7 +49,7 @@ model:
   gate_hidden_dims: [256, 128]  # reproduction choice
   critic_hidden_dims: [512, 256, 128]  # reproduction choice
   activation: elu
-  initial_std: 1.0
+  initial_std: 0.2         # reproduction choice; paper publishes learned scalar std, not initialization
 
 ppo:
   rollout_steps: 24
