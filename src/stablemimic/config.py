@@ -24,6 +24,7 @@ class RewardCfg:
     body_linear_velocity: KernelCfg
     body_angular_velocity: KernelCfg
     recovery_multiplier: float = 2.5
+    success_bonus: float = 1.0
     action_rate_penalty: float = -0.01
     torque_penalty: float = -2.0e-5
     power_penalty: float = -1.0e-5
@@ -42,6 +43,7 @@ class EnvironmentCfg:
     transition_duration_s: float = 1.5
     recovery_error_timeout_s: float = 2.0
     recovery_success_threshold: float = 0.82
+    recovered_like_height_ratio: float = 0.8
     observation_noise_std: float = 0.0
 
 
@@ -110,6 +112,8 @@ def load_config(path: str | Path) -> StableMimicCfg:
         raise ValueError("StableMimic policy step must be 0.02 s (50 Hz)")
     if env.action_clip <= 0.0:
         raise ValueError("environment.action_clip must be positive")
+    if env.recovered_like_height_ratio <= 0.0:
+        raise ValueError("environment.recovered_like_height_ratio must be positive")
     reward_raw = raw["reward"]
     reward = RewardCfg(
         **{name: _kernel(reward_raw[name]) for name in (
@@ -118,6 +122,8 @@ def load_config(path: str | Path) -> StableMimicCfg:
         )},
         **{key: value for key, value in reward_raw.items() if not isinstance(value, dict)},
     )
+    if reward.success_bonus < 0.0:
+        raise ValueError("reward.success_bonus must be non-negative")
     model_raw = dict(raw["model"])
     for key in ("expert_hidden_dims", "gate_hidden_dims", "critic_hidden_dims"):
         model_raw[key] = tuple(int(value) for value in model_raw[key])

@@ -26,7 +26,9 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     transition_duration_s: float = 1.5
     recovery_error_timeout_s: float = 2.0
     recovery_success_threshold: float = 0.82
+    recovered_like_height_ratio: float = 0.8
     observation_noise_std: float = 0.0
+    enable_early_termination: bool = True
 
     sim: SimulationCfg = SimulationCfg(
         dt=0.005,

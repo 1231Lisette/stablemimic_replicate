@@ -62,14 +62,18 @@ class StableMimicActor(nn.Module):
         self.gate = _mlp(GATE_OBS_DIM, gate_hidden_dims, 2, activation)
         self.log_std = nn.Parameter(torch.tensor(math.log(initial_std)))
 
+    def gate_weights(self, gate_observation: torch.Tensor) -> torch.Tensor:
+        """Return Gate routing weights without evaluating either expert."""
+        if not torch.onnx.is_in_onnx_export() and gate_observation.shape[-1] != GATE_OBS_DIM:
+            raise ValueError(f"Gate input must be {GATE_OBS_DIM}-D")
+        return torch.softmax(self.gate(gate_observation), dim=-1)
+
     def forward(self, actor_observation: torch.Tensor, gate_observation: torch.Tensor) -> PolicyOutput:
         if not torch.onnx.is_in_onnx_export() and actor_observation.shape[-1] != ACTOR_OBS_DIM:
             raise ValueError(f"Actor input must be {ACTOR_OBS_DIM}-D")
-        if not torch.onnx.is_in_onnx_export() and gate_observation.shape[-1] != GATE_OBS_DIM:
-            raise ValueError(f"Gate input must be {GATE_OBS_DIM}-D")
         tracking_mean = self.tracking_expert(actor_observation)
         recovery_mean = self.recovery_expert(actor_observation)
-        gate_weights = torch.softmax(self.gate(gate_observation), dim=-1)
+        gate_weights = self.gate_weights(gate_observation)
         mean = gate_weights[:, 0:1] * tracking_mean + gate_weights[:, 1:2] * recovery_mean
         return PolicyOutput(mean, gate_weights, tracking_mean, recovery_mean)
 

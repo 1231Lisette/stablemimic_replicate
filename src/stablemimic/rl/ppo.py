@@ -59,26 +59,37 @@ class PPO:
                     torch.square(value - batch.return_), torch.square(value_clipped - batch.return_)
                 ).mean()
 
-                gate_ce = -(batch.gate_target * torch.log(output.gate_weights.clamp_min(1.0e-8))).sum(-1).mean()
+                per_sample_gate_ce = -(
+                    batch.gate_target * torch.log(output.gate_weights.clamp_min(1.0e-8))
+                ).sum(-1)
                 mixed = (batch.gate_target > 0.0).all(-1)
+                gate_sample_weight = torch.ones_like(per_sample_gate_ce)
+                gate_sample_weight[mixed] = self.config.transition_coefficient
+                gate_ce = (per_sample_gate_ce * gate_sample_weight).sum() / gate_sample_weight.sum()
                 transition_loss = (
-                    F.mse_loss(output.gate_weights[mixed], batch.gate_target[mixed])
+                    per_sample_gate_ce[mixed].mean()
                     if mixed.any() else output.mean.sum() * 0.0
                 )
-                blend = (output.gate_weights[:, 0] * output.gate_weights[:, 1]).detach()
-                consistency_loss = (blend * torch.square(output.tracking_mean - output.recovery_mean).mean(-1)).mean()
-                supervised_mean = (
-                    batch.gate_target[:, 0:1] * output.tracking_mean.detach()
-                    + batch.gate_target[:, 1:2] * output.recovery_mean.detach()
+                previous_gate_weights = self.agent.actor.gate_weights(
+                    batch.previous_gate_observation
                 )
-                alignment_loss = F.mse_loss(output.mean, supervised_mean)
+                consistency_loss = (
+                    F.mse_loss(
+                        output.gate_weights[batch.same_regime],
+                        previous_gate_weights[batch.same_regime],
+                    )
+                    if batch.same_regime.any() else output.mean.sum() * 0.0
+                )
+                alignment_loss = (
+                    F.mse_loss(output.tracking_mean[mixed], output.recovery_mean[mixed])
+                    if mixed.any() else output.mean.sum() * 0.0
+                )
                 entropy_mean = entropy.mean()
                 loss = (
                     policy_loss
                     + self.config.value_loss_coefficient * value_loss
                     - self.config.entropy_coefficient * entropy_mean
                     + self.config.gate_ce_coefficient * gate_ce
-                    + self.config.transition_coefficient * transition_loss
                     + self.config.consistency_coefficient * consistency_loss
                     + self.config.alignment_coefficient * alignment_loss
                 )

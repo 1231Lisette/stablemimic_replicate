@@ -61,6 +61,9 @@ def main() -> None:
     env_cfg.transition_duration_s = repository_config.environment.transition_duration_s
     env_cfg.recovery_error_timeout_s = repository_config.environment.recovery_error_timeout_s
     env_cfg.recovery_success_threshold = repository_config.environment.recovery_success_threshold
+    env_cfg.recovered_like_height_ratio = (
+        repository_config.environment.recovered_like_height_ratio
+    )
     env_cfg.observation_noise_std = repository_config.environment.observation_noise_std
     env = StableMimicG1Env(env_cfg)
     run_dir = args_cli.run_dir or repository_config.output_root / "stablemimic_g1"

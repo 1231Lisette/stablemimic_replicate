@@ -55,6 +55,42 @@ class StableMimicTorchTests(unittest.TestCase):
         state.update(torch.zeros(2), torch.zeros(2), 0.75, 0.8)
         self.assertTrue(torch.allclose(state.gate_target()[1], torch.tensor([0.5, 0.5])))
 
+    def test_recovered_like_reset_can_override_recovery_gate_target(self) -> None:
+        from stablemimic.core.phases import PhaseState
+
+        state = PhaseState.create(2, "cpu", transition_duration=1.5)
+        state.reset(torch.arange(2), torch.ones(2, dtype=torch.bool))
+        target = state.gate_target(torch.tensor([True, False]))
+        self.assertTrue(torch.equal(target[0], torch.tensor([1.0, 0.0])))
+        self.assertTrue(torch.equal(target[1], torch.tensor([0.0, 1.0])))
+
+    def test_rollout_tracks_only_adjacent_same_regime_gate_samples(self) -> None:
+        from stablemimic.core.observations import ACTOR_OBS_DIM, CRITIC_OBS_DIM, GATE_OBS_DIM
+        from stablemimic.rl import RolloutStorage
+
+        storage = RolloutStorage(3, 2, "cpu")
+        targets = (
+            torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+            torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+            torch.tensor([[0.5, 0.5], [0.0, 1.0]]),
+        )
+        dones = (
+            torch.tensor([False, True]),
+            torch.tensor([False, False]),
+            torch.tensor([False, False]),
+        )
+        gate_observations = []
+        for step in range(3):
+            gate_observation = torch.full((2, GATE_OBS_DIM), float(step))
+            gate_observations.append(gate_observation)
+            storage.add(
+                torch.zeros(2, ACTOR_OBS_DIM), gate_observation,
+                torch.zeros(2, CRITIC_OBS_DIM), torch.zeros(2, 29),
+                torch.zeros(2), torch.zeros(2), torch.zeros(2), dones[step], targets[step],
+            )
+        self.assertEqual(storage.same_regime.tolist(), [[False, False], [True, False], [False, True]])
+        self.assertTrue(torch.equal(storage.previous_gate_observation[2], gate_observations[1]))
+
     def test_perfect_reward_exceeds_perturbed_and_recovery_ignores_xy(self) -> None:
         from stablemimic.rewards import KinematicState, whole_body_reward
 

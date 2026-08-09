@@ -68,7 +68,7 @@ class PhaseState:
         self.transition_time[completed] = self.transition_duration
         return failed
 
-    def gate_target(self) -> torch.Tensor:
+    def gate_target(self, tracking_override: torch.Tensor | None = None) -> torch.Tensor:
         target = torch.zeros(self.phase.shape[0], 2, device=self.phase.device)
         tracking = self.phase == int(MotionPhase.TRACKING)
         recovery = self.phase == int(MotionPhase.RECOVERY)
@@ -79,6 +79,12 @@ class PhaseState:
             alpha = (self.transition_time[transition] / self.transition_duration).clamp(0.0, 1.0)
             target[transition, 0] = alpha
             target[transition, 1] = 1.0 - alpha
+        if tracking_override is not None:
+            if tracking_override.shape != self.phase.shape:
+                raise ValueError("tracking_override shape mismatch")
+            override = tracking_override & recovery
+            target[override, 0] = 1.0
+            target[override, 1] = 0.0
         return target
 
     def reward_weights(self) -> tuple[torch.Tensor, torch.Tensor]:

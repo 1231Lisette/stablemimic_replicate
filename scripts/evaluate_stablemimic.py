@@ -19,6 +19,10 @@ parser.add_argument("--num-envs", type=int, default=64)
 parser.add_argument("--steps", type=int, default=1000)
 parser.add_argument("--output", required=True)
 parser.add_argument("--matched-pushes", action="store_true")
+parser.add_argument(
+    "--enable-early-termination", action="store_true",
+    help="Use training-time fall/failure resets (paper evaluation leaves them disabled).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -57,7 +61,9 @@ def main() -> None:
     env_cfg.transition_duration_s = config.environment.transition_duration_s
     env_cfg.recovery_error_timeout_s = config.environment.recovery_error_timeout_s
     env_cfg.recovery_success_threshold = config.environment.recovery_success_threshold
+    env_cfg.recovered_like_height_ratio = config.environment.recovered_like_height_ratio
     env_cfg.observation_noise_std = 0.0
+    env_cfg.enable_early_termination = args_cli.enable_early_termination
     env = StableMimicG1Env(env_cfg)
     if args_cli.matched_pushes and env.num_envs < 100:
         raise ValueError("--matched-pushes requires --num-envs >= 100")
@@ -83,6 +89,12 @@ def main() -> None:
     transition_samples = torch.zeros((), device=env.device)
     clipped_action_elements = torch.zeros((), device=env.device)
     unit_action_exceed_elements = torch.zeros((), device=env.device)
+    ever_fallen = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+    recovery_eligible = torch.zeros_like(ever_fallen)
+    recovered_after_fall = torch.zeros_like(ever_fallen)
+    recovery_hold_steps = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+    fall_step = torch.full((env.num_envs,), -1, dtype=torch.long, device=env.device)
+    resume_step = torch.full_like(fall_step, -1)
     event_counts = {
         name: torch.zeros((), device=env.device)
         for name in (
@@ -95,6 +107,9 @@ def main() -> None:
         )
     }
     push_start, push_steps = 50, int(round(0.2 / env.step_dt))
+    fall_tilt_radians = torch.deg2rad(torch.tensor(60.0, device=env.device))
+    resume_tilt_radians = torch.deg2rad(torch.tensor(30.0, device=env.device))
+    required_resume_steps = int(round(0.5 / env.step_dt))
     push_forces = torch.zeros(env.num_envs, 3, device=env.device)
     if args_cli.matched_pushes:
         for event in matched_push_protocol():
@@ -112,6 +127,34 @@ def main() -> None:
         with torch.no_grad():
             action, _, _, policy = agent.actor.act(actor, gate, deterministic=True)
         observation, reward, terminated, truncated, _ = env.step(action)
+        recovery_state = env.recovery_evaluation_state()
+        fallen_now = (
+            (recovery_state["root_height"] < 0.5)
+            | (recovery_state["root_tilt_radians"] > fall_tilt_radians)
+        )
+        episode_ended = terminated | truncated
+        new_fall = fallen_now & ~ever_fallen & ~episode_ended
+        fall_step[new_fall] = step
+        ever_fallen |= fallen_now
+        recovery_eligible |= new_fall
+        recovery_eligible &= ~episode_ended
+        # The paper publishes the fall threshold but not its exact tracking-resumption
+        # threshold. This explicit reproduction criterion requires 0.5 s of upright,
+        # command-height, high-similarity behavior routed back to the Tracking Expert.
+        resume_candidate = (
+            recovery_eligible
+            & ~recovered_after_fall
+            & (recovery_state["root_height"] >= 0.8 * recovery_state["command_height"])
+            & (recovery_state["root_tilt_radians"] <= resume_tilt_radians)
+            & (recovery_state["similarity"] >= config.environment.recovery_success_threshold)
+            & (policy.gate_weights[:, 0] >= 0.5)
+        )
+        recovery_hold_steps = torch.where(
+            resume_candidate, recovery_hold_steps + 1, torch.zeros_like(recovery_hold_steps)
+        )
+        newly_recovered = recovery_hold_steps >= required_resume_steps
+        recovered_after_fall |= newly_recovered
+        resume_step[newly_recovered & (resume_step < 0)] = step
         tracking_mask = gate_target[:, 0] == 1.0
         recovery_mask = gate_target[:, 1] == 1.0
         transition_mask = ~(tracking_mask | recovery_mask)
@@ -128,6 +171,8 @@ def main() -> None:
         unit_action_exceed_elements += (action.abs() > 1.0).sum()
         for name in event_counts:
             event_counts[name] += env.latest_events[name].sum()
+    valid_resume = resume_step >= 0
+    recovery_latency = (resume_step[valid_resume] - fall_step[valid_resume]).float() * env.step_dt
     metrics = {
         "steps": args_cli.steps,
         "num_envs": env.num_envs,
@@ -147,6 +192,23 @@ def main() -> None:
         ),
         "unit_action_exceed_fraction": float(
             unit_action_exceed_elements / (args_cli.steps * env.num_envs * 29)
+        ),
+        "early_termination_enabled": bool(args_cli.enable_early_termination),
+        "paper_fall_count": int(ever_fallen.sum()),
+        "tracking_resumption_count": int(recovered_after_fall.sum()),
+        "tracking_resumption_rate_after_fall": float(
+            recovered_after_fall.sum() / ever_fallen.sum().clamp_min(1)
+        ),
+        "tracking_resumption_rate_per_trial": float(
+            recovered_after_fall.sum() / env.num_envs
+        ),
+        "mean_tracking_resumption_seconds": (
+            float(recovery_latency.mean()) if recovery_latency.numel() else None
+        ),
+        "fall_definition": "root_height<0.5m or root_tilt>60deg (paper)",
+        "tracking_resumption_definition": (
+            "0.5s sustained: height>=0.8*command_height, tilt<=30deg, "
+            "similarity>=recovery_success_threshold, tracking_gate>=0.5 (reproduction choice)"
         ),
         **{f"{name}_count": int(value) for name, value in event_counts.items()},
         "recovery_successes_per_1000_recovery_steps": float(

@@ -13,6 +13,7 @@ from stablemimic.core.observations import ACTION_DIM, ACTOR_OBS_DIM, CRITIC_OBS_
 class RolloutBatch:
     actor_observation: torch.Tensor
     gate_observation: torch.Tensor
+    previous_gate_observation: torch.Tensor
     critic_observation: torch.Tensor
     action: torch.Tensor
     old_log_probability: torch.Tensor
@@ -20,6 +21,7 @@ class RolloutBatch:
     advantage: torch.Tensor
     return_: torch.Tensor
     gate_target: torch.Tensor
+    same_regime: torch.Tensor
 
 
 class RolloutStorage:
@@ -29,6 +31,7 @@ class RolloutStorage:
         self.device = torch.device(device)
         self.actor_observation = torch.zeros(*shape, ACTOR_OBS_DIM, device=device)
         self.gate_observation = torch.zeros(*shape, GATE_OBS_DIM, device=device)
+        self.previous_gate_observation = torch.zeros(*shape, GATE_OBS_DIM, device=device)
         self.critic_observation = torch.zeros(*shape, CRITIC_OBS_DIM, device=device)
         self.actions = torch.zeros(*shape, ACTION_DIM, device=device)
         self.log_probabilities = torch.zeros(*shape, device=device)
@@ -36,6 +39,7 @@ class RolloutStorage:
         self.rewards = torch.zeros(*shape, device=device)
         self.dones = torch.zeros(*shape, dtype=torch.bool, device=device)
         self.gate_targets = torch.zeros(*shape, 2, device=device)
+        self.same_regime = torch.zeros(*shape, dtype=torch.bool, device=device)
         self.advantages = torch.zeros(*shape, device=device)
         self.returns = torch.zeros(*shape, device=device)
         self.cursor = 0
@@ -48,6 +52,14 @@ class RolloutStorage:
     ) -> None:
         if self.cursor >= self.steps:
             raise RuntimeError("rollout storage is full")
+        if self.cursor == 0:
+            self.previous_gate_observation[0].copy_(gate_observation)
+        else:
+            self.previous_gate_observation[self.cursor].copy_(self.gate_observation[self.cursor - 1])
+            self.same_regime[self.cursor].copy_(
+                (~self.dones[self.cursor - 1])
+                & torch.eq(gate_target, self.gate_targets[self.cursor - 1]).all(-1)
+            )
         values = (
             (self.actor_observation, actor_observation),
             (self.gate_observation, gate_observation),
@@ -84,6 +96,7 @@ class RolloutStorage:
         flattened = {
             "actor_observation": self.actor_observation.flatten(0, 1),
             "gate_observation": self.gate_observation.flatten(0, 1),
+            "previous_gate_observation": self.previous_gate_observation.flatten(0, 1),
             "critic_observation": self.critic_observation.flatten(0, 1),
             "action": self.actions.flatten(0, 1),
             "old_log_probability": self.log_probabilities.flatten(0, 1),
@@ -91,6 +104,7 @@ class RolloutStorage:
             "advantage": self.advantages.flatten(0, 1),
             "return_": self.returns.flatten(0, 1),
             "gate_target": self.gate_targets.flatten(0, 1),
+            "same_regime": self.same_regime.flatten(0, 1),
         }
         for start in range(0, total, size):
             index = permutation[start : start + size]

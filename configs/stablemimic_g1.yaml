@@ -15,6 +15,7 @@ environment:
   transition_duration_s: 1.5
   recovery_error_timeout_s: 2.0
   recovery_success_threshold: 0.82  # reproduction choice
+  recovered_like_height_ratio: 0.8
   observation_noise_std: 0.0       # reproduction choice; disabled baseline
 
 reset_noise:
@@ -38,6 +39,7 @@ reward:
   body_linear_velocity: {weight: 0.5, sigma: 1.00}
   body_angular_velocity: {weight: 0.5, sigma: 2.00}
   recovery_multiplier: 2.5
+  success_bonus: 1.0          # reproduction choice; paper includes r_success but omits its coefficient
   action_rate_penalty: -0.01
   torque_penalty: -0.00002
   power_penalty: -0.00001
@@ -65,7 +67,7 @@ ppo:
   max_grad_norm: 1.0
   target_kl: 0.01          # reproduction choice for adaptive LR rule
   gate_ce_coefficient: 0.1
-  transition_coefficient: 4.0
+  transition_coefficient: 4.0  # transition-sample weight for Gate cross-entropy
   consistency_coefficient: 0.01
   alignment_coefficient: 0.01
   normalize_advantage: true

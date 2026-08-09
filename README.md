@@ -15,7 +15,7 @@ arXiv:2608.02385 构建。
 - 4 帧 Actor / Gate / Critic history，维度严格为 884 / 372 / 1428；
 - 两个 512-256-128 ELU Expert、proprioceptive softmax Gate、29-D soft-fused mean；
 - shared learned scalar policy std、privileged Critic、normalization；
-- rollout storage、GAE、PPO、adaptive learning rate 与四项 auxiliary loss；
+- rollout storage、GAE、PPO、adaptive learning rate 与 Gate/transition auxiliary supervision；
 - tracking-only、recovery-only、50/50 joint training、续训与 checkpoint；
 - 确定性 Isaac 评估、论文形式的 100 次 matched push schedule；
 - 单一 deployable Actor ONNX 导出、metadata 与 PyTorch/ONNX 数值对齐检查。
@@ -36,6 +36,13 @@ randomization。
 本项目选择 Isaac Lab 作为训练 simulator。所有缺失参数集中在
 [`configs/stablemimic_g1.yaml`](configs/stablemimic_g1.yaml)，并标注为
 `reproduction choice`，不能当作论文原始参数引用。
+
+实现严格用执行后的 `s_(t+1)` 对齐 hidden reference successor `k+1` 计算奖励。
+Gate CE 系数为 `0.1`，transition 样本权重为 `4`；相邻稳态样本使用 `0.01`
+routing consistency，transition 样本使用 `0.01` expert-output alignment。论文包含
+`r_success` 但没有公布其系数，因此配置采用 `reward.success_bonus: 1.0`。Recovery reset
+若初始高度不低于 `0.8 * command_height`，仅把 Gate 监督改为 Tracking；它仍保留
+Recovery reset、Recovery reward 与 privileged recovery reference，避免改变训练分布。
 
 ## 信息边界
 
@@ -190,6 +197,9 @@ Actor 按论文描述使用共享标量方差的高斯动作。`environment.acti
 
 Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iteration 和配置快照。
 
+注意：奖励时序与 auxiliary loss 语义修改后，旧的 `joint_ab_std_020` iteration-500
+checkpoint 只保留作诊断证据，不应续训。请从随机初始化建立新的 run directory。
+
 ## 5. 确定性评估
 
 普通评估：
@@ -220,6 +230,14 @@ Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iterat
 
 该模式强制所有环境从正常 Tracking 状态开始，再在第 50 个 policy step 同时施加
 matched push；不会混入 Recovery reset。
+
+评估默认关闭训练期的 early fall/failure reset，使机器人摔倒后仍能继续执行策略。
+JSON 中的 `paper_fall_count` 使用论文明确给出的判据：root/pelvis 高度低于 0.5 m，
+或 root tilt 大于 60°。论文没有公开“恢复后重新跟踪”的精确阈值，因此本复现把
+`tracking_resumption_count` 定义为连续 0.5 秒同时满足：高度至少为命令高度的 80%、
+tilt 不超过 30°、similarity 达到 recovery threshold、且 Tracking Gate 权重至少 0.5。
+该定义也会原样写入 metrics JSON。若只想复现训练期重置行为，可额外传入
+`--enable-early-termination`。
 
 论文的统一评测 simulator 是 MuJoCo，但公开材料没有给出可直接复用的精确 G1 MJCF、
 PD 和 observation adapter。本仓库当前命令在 Isaac 中复现相同 push schedule；在精确

@@ -75,6 +75,8 @@ class StableMimicG1Env(DirectRLEnv):
         self._history_needs_reset = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
         self._sequence_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._phase_failed = torch.zeros_like(self._sequence_done)
+        self._gate_tracking_override = torch.zeros_like(self._sequence_done)
+        self._latest_similarity = torch.zeros(self.num_envs, device=self.device)
         self._latest_gate_observation = torch.zeros(self.num_envs, 372, device=self.device)
         self._latest_gate_target = torch.zeros(self.num_envs, 2, device=self.device)
         self._latest_events = {
@@ -115,6 +117,21 @@ class StableMimicG1Env(DirectRLEnv):
     def latest_events(self) -> dict[str, torch.Tensor]:
         """Per-environment events produced by the most recent policy step."""
         return self._latest_events
+
+    @property
+    def latest_similarity(self) -> torch.Tensor:
+        return self._latest_similarity
+
+    def recovery_evaluation_state(self) -> dict[str, torch.Tensor]:
+        """Expose paper-level fall signals without leaking them into the policy."""
+        projected_gravity = self._robot.data.projected_gravity_b
+        root_tilt = torch.acos((-projected_gravity[:, 2]).clamp(-1.0, 1.0))
+        return {
+            "root_height": self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2],
+            "root_tilt_radians": root_tilt,
+            "command_height": self._tracking_sample.root_pos[:, 2],
+            "similarity": self._latest_similarity,
+        }
 
     def training_state(self) -> dict[str, torch.Tensor]:
         return {"recovery_failure_histogram": self._recovery_sampler.failures.detach().cpu()}
@@ -159,7 +176,6 @@ class StableMimicG1Env(DirectRLEnv):
             self._robot.data.default_joint_pos[:, self._body_joint_ids]
             + self.cfg.action_scale * self._actions
         )
-        self._write_reference_at_current_time()
         next_tracking = self._tracking_times + self.step_dt
         next_recovery = self._recovery_times + self.step_dt
         self._sequence_done = torch.where(
@@ -173,6 +189,9 @@ class StableMimicG1Env(DirectRLEnv):
         self._recovery_times = torch.minimum(
             next_recovery, self._motions.recovery.durations[self._recovery_motion_ids]
         )
+        # Physics advances s_t -> s_(t+1); write the matching command/get-up
+        # successor so the reward compares s_(t+1) against reference k+1.
+        self._write_reference_at_current_time()
 
     def _apply_action(self) -> None:
         self._robot.set_joint_position_target(self._processed_actions, joint_ids=self._body_joint_ids)
@@ -275,7 +294,9 @@ class StableMimicG1Env(DirectRLEnv):
             self._history_needs_reset[reset_ids] = False
         observations = self._history.append(proprio, command, uncorrupted, hidden)
         self._latest_gate_observation = observations.gate
-        self._latest_gate_target = self._phase_state.gate_target()
+        self._latest_gate_target = self._phase_state.gate_target(
+            self._gate_tracking_override
+        )
         return {"policy": observations.actor, "critic": observations.critic}
 
     def _get_rewards(self) -> torch.Tensor:
@@ -310,6 +331,7 @@ class StableMimicG1Env(DirectRLEnv):
             similarity / self._repository_config.reward.recovery_multiplier,
             similarity,
         ).clamp(0.0, 1.0)
+        self._latest_similarity.copy_(similarity)
         old_phase = self._phase_state.phase.clone()
         self._phase_failed = self._phase_state.update(
             similarity,
@@ -336,6 +358,7 @@ class StableMimicG1Env(DirectRLEnv):
         tracking_weight, recovery_weight = self._phase_state.reward_weights()
         phase_weight = torch.where(recovery, recovery_weight, tracking_weight)
         reward = (breakdown.tracking * phase_weight + breakdown.regularization) * self.step_dt
+        reward = reward + began_transition.float() * self._repository_config.reward.success_bonus
         for name in self._episode_sums:
             value = reward if name == "total" else getattr(breakdown, name) * self.step_dt
             self._episode_sums[name] += value
@@ -362,10 +385,15 @@ class StableMimicG1Env(DirectRLEnv):
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         tracking = self._phase_state.phase == int(MotionPhase.TRACKING)
         unrecoverable_fall = tracking & (self._robot.data.root_pos_w[:, 2] < 0.18)
-        terminated = self._phase_failed | self._sequence_done | unrecoverable_fall
-        self._latest_events["recovery_failure"].copy_(self._phase_failed)
+        early_failure = self._phase_failed | unrecoverable_fall
+        terminated = self._sequence_done | (early_failure & self.cfg.enable_early_termination)
+        self._latest_events["recovery_failure"].copy_(
+            self._phase_failed & self.cfg.enable_early_termination
+        )
         self._latest_events["sequence_termination"].copy_(self._sequence_done)
-        self._latest_events["unrecoverable_fall_termination"].copy_(unrecoverable_fall)
+        self._latest_events["unrecoverable_fall_termination"].copy_(
+            unrecoverable_fall & self.cfg.enable_early_termination
+        )
         self._latest_events["timeout"].copy_(time_out)
         return terminated, time_out
 
@@ -405,6 +433,11 @@ class StableMimicG1Env(DirectRLEnv):
         root_position += origins
         root_position[:, :2] += self._uniform_noise("root_xy", (count, 2))
         root_position[:, 2:3] += self._uniform_noise("root_z", (count, 1))
+        reset_height = root_position[:, 2] - origins[:, 2]
+        command_height = tracking_sample.root_pos[:, 2]
+        self._gate_tracking_override[env_ids] = recovery_reset & (
+            reset_height >= self.cfg.recovered_like_height_ratio * command_height
+        )
         orientation_noise = torch.cat((
             self._uniform_noise("roll_pitch", (count, 2)),
             self._uniform_noise("yaw", (count, 1)),
