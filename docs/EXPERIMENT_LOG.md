@@ -99,3 +99,19 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   100/100 candidates、100/100 进入 Recovery，Recovery target/sample fraction `86.65%`，
   termination `0`、resumption `0`。这同时验证训练 warmup 与完整评估路径，仍不把随机策略的
   负对照误报为恢复成功。
+
+## version-3 warmup iteration-100 决策点（2026-08-10）
+
+- `joint_atomic_warmup_v1` 从随机初始化完成 1024-env、100 iterations；训练期间 fall switch
+  probability 始终为 `0`。337,717 个 reference-aware fall candidates 中进入 Recovery 的数量
+  严格为 `0`，而 Recovery resets 从第一轮起仍产生训练样本；累计 411 recovery successes、
+  315 transitions。
+- last-20 Tracking/Recovery exposure 为 `41.80%/57.05%`，相比 version-2 同期 Tracking
+  `21.92%` 明显改善。last-20 KL mean `0.01790`、final std `0.20627`、action clip fraction
+  `0`，训练数值健康。
+- 64-env、500-step mixed 评估：64/64 fall、24 次 reference-aware fall entry、1 recovery
+  success/1 transition、0 tracking resumptions、0 terminations。
+- 100-trial、500-step matched-push：100/100 fall、100/100 candidates、100/100 进入 Recovery，
+  0 recovery success、0 transition、0 tracking resumption、0 termination。说明 curriculum 的
+  路由修复有效，但 iteration 100 的策略尚未学会外力推倒后的恢复；按预定决策门停止，不把
+  “训练数值健康”误写成“恢复能力已经获得”。
