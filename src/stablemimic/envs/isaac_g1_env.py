@@ -25,7 +25,7 @@ from stablemimic.core.observations import (
     build_proprioception,
     build_recovery_reference,
 )
-from stablemimic.core.phases import MotionPhase, PhaseState
+from stablemimic.core.phases import MotionPhase, PhaseState, uncommanded_tracking_fall
 from stablemimic.motion.torch_library import (
     FailureAdaptiveSampler,
     TorchMotionSample,
@@ -85,6 +85,8 @@ class StableMimicG1Env(DirectRLEnv):
         self._sequence_done = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._phase_failed = torch.zeros_like(self._sequence_done)
         self._gate_tracking_override = torch.zeros_like(self._sequence_done)
+        self._fall_recovery_probability = 1.0
+        self.set_fall_recovery_probability(cfg.fall_recovery_probability)
         self._latest_similarity = torch.zeros(self.num_envs, device=self.device)
         self._latest_terminal_similarity = torch.zeros(self.num_envs, device=self.device)
         self._latest_gate_observation = torch.zeros(self.num_envs, 372, device=self.device)
@@ -95,6 +97,7 @@ class StableMimicG1Env(DirectRLEnv):
                 "recovery_success",
                 "recovery_failure",
                 "transition_completed",
+                "tracking_fall_candidate",
                 "tracking_fall_entered_recovery",
                 "sequence_termination",
                 "unrecoverable_fall_termination",
@@ -170,6 +173,12 @@ class StableMimicG1Env(DirectRLEnv):
             body_ids=self._torso_body_ids,
             is_global=True,
         )
+
+    def set_fall_recovery_probability(self, probability: float) -> None:
+        """Set the training curriculum probability without changing policy inputs."""
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError("fall recovery probability must be in [0, 1]")
+        self._fall_recovery_probability = float(probability)
 
     def _setup_scene(self) -> None:
         self._robot = Articulation(self.cfg.robot)
@@ -425,25 +434,47 @@ class StableMimicG1Env(DirectRLEnv):
         for name in self._episode_sums:
             value = reward if name == "total" else getattr(breakdown, name) * self.step_dt
             self._episode_sums[name] += value
-        entered_recovery = self._tracking_fall_mask()
+        fall_candidate, entered_recovery = self._tracking_fall_masks()
+        self._latest_events["tracking_fall_candidate"].copy_(fall_candidate)
         self._latest_events["tracking_fall_entered_recovery"].copy_(entered_recovery)
         if entered_recovery.any():
             self._enter_recovery_from_fall(entered_recovery)
         return reward
 
-    def _tracking_fall_mask(self) -> torch.Tensor:
+    def _tracking_fall_masks(self) -> tuple[torch.Tensor, torch.Tensor]:
         if not self.cfg.tracking_fall_recovery_enabled:
-            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            disabled = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            return disabled, disabled
         tracking = self._phase_state.phase == int(MotionPhase.TRACKING)
         root_height = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
         root_tilt = torch.acos(
             (-self._robot.data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0)
         )
         threshold = math.radians(self.cfg.tracking_fall_tilt_degrees)
-        return tracking & (
-            (root_height < self.cfg.tracking_fall_height_threshold)
-            | (root_tilt > threshold)
+        reference_tilt = torch.acos(
+            (
+                -projected_gravity_from_xyzw(
+                    self._tracking_sample.root_quat_xyzw
+                )[:, 2]
+            ).clamp(-1.0, 1.0)
         )
+        candidate = tracking & uncommanded_tracking_fall(
+            root_height,
+            root_tilt,
+            self._tracking_sample.root_pos[:, 2],
+            reference_tilt,
+            height_threshold=self.cfg.tracking_fall_height_threshold,
+            tilt_threshold_radians=threshold,
+        )
+        if self._fall_recovery_probability <= 0.0:
+            return candidate, torch.zeros_like(candidate)
+        if self._fall_recovery_probability >= 1.0:
+            return candidate, candidate
+        entered = candidate & (
+            torch.rand(self.num_envs, device=self.device)
+            < self._fall_recovery_probability
+        )
+        return candidate, entered
 
     def _enter_recovery_from_fall(self, mask: torch.Tensor) -> None:
         """Attach fallen Tracking states to the nearest atomic get-up reference."""

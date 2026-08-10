@@ -102,6 +102,8 @@ class TrainingCfg:
     max_iterations: int = 10_000
     checkpoint_interval: int = 100
     log_interval: int = 10
+    fall_recovery_warmup_iterations: int = 100
+    fall_recovery_ramp_iterations: int = 100
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,21 @@ class StableMimicCfg:
 
 def _kernel(value: dict[str, Any]) -> KernelCfg:
     return KernelCfg(weight=float(value["weight"]), sigma=float(value["sigma"]))
+
+
+def fall_recovery_curriculum_probability(
+    iteration: int, warmup_iterations: int, ramp_iterations: int
+) -> float:
+    """Return the fall-switch probability for a one-indexed training iteration."""
+    if iteration <= 0:
+        raise ValueError("iteration must be positive")
+    if warmup_iterations < 0 or ramp_iterations < 0:
+        raise ValueError("fall-recovery curriculum iterations must be non-negative")
+    if iteration <= warmup_iterations:
+        return 0.0
+    if ramp_iterations == 0:
+        return 1.0
+    return min((iteration - warmup_iterations) / ramp_iterations, 1.0)
 
 
 def load_config(path: str | Path) -> StableMimicCfg:
@@ -177,6 +194,11 @@ def load_config(path: str | Path) -> StableMimicCfg:
     reset_noise = {
         key: (float(value[0]), float(value[1])) for key, value in raw["reset_noise"].items()
     }
+    training = TrainingCfg(**raw["training"])
+    if training.fall_recovery_warmup_iterations < 0:
+        raise ValueError("training.fall_recovery_warmup_iterations must be non-negative")
+    if training.fall_recovery_ramp_iterations < 0:
+        raise ValueError("training.fall_recovery_ramp_iterations must be non-negative")
     return StableMimicCfg(
         seed=int(raw["seed"]),
         data_root=Path(raw["data_root"]),
@@ -186,6 +208,6 @@ def load_config(path: str | Path) -> StableMimicCfg:
         reward=reward,
         model=ModelCfg(**model_raw),
         ppo=PpoCfg(**raw["ppo"]),
-        training=TrainingCfg(**raw["training"]),
+        training=training,
         reset_noise=reset_noise,
     )

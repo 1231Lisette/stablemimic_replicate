@@ -34,6 +34,7 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     recovery_match_joint_weight: float = 1.0
     recovery_match_height_weight: float = 4.0
     recovery_match_gravity_weight: float = 2.0
+    fall_recovery_probability: float = 1.0
     observation_noise_std: float = 0.0
     enable_early_termination: bool = True
 

@@ -76,3 +76,26 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   Recovery target/sample fraction `86.66%`，sequence termination `0`、总 termination `0`、
   tracking resumption `0`。这证明新评估不再把推倒状态留在 Tracking，也不会在 recovery
   clip 末端偷偷 reset；随机策略仍不能伪造恢复成功。
+
+## 原子 Recovery iteration-100 结果与 warmup 修正
+
+- `joint_atomic_recovery_v1` 在 1024 env、100 iterations 下数值健康：final/max std
+  `0.20568/0.20581`、final KL `0.01831`、last-20 KL mean `0.01768`，无裁剪、CUDA、PhysX
+  或非有限错误。训练累计 9,094 次 fall entry、287 successes、216 transitions。
+- 但 last-20 Tracking exposure 只有 `21.92%`：50/50 reset 后，随机 Tracking 策略很快跌倒并
+  切入 Recovery，导致 Motion Expert 样本不足。mixed 评估 64/64 fall、0 resumption；matched
+  push 100/100 fall 且正确进入 Recovery，但 0/100 resumption。该 checkpoint 停在 100。
+- Tracking 数据中仅 220/45,690 帧（0.4815%）满足 raw fall criterion，但存在最长 97 帧的
+  commanded floor-motion 区间，证明 fall switch 还需要 reference-aware guard。
+- 新的 version-3 curriculum 保留从 iteration 1 开始的 50/50 Tracking/Recovery resets；仅把
+  Tracking fall switch 在 1--100 设为 0、101--200 线性 ramp 到 1，并要求 Tracking reference
+  本身非 fallen。这样不是顺序预训练：两个 Expert、Gate 和 Critic 仍在每次 joint PPO update
+  中一起优化。version-2 checkpoint 不可续训。
+- version-3 的 1024-env iteration-1 CUDA smoke 中，fall switch probability 为 `0`，观察到
+  207 个 reference-aware fall candidates、0 个 fall entry；Tracking/Recovery exposure 分别为
+  `58.26%/41.41%`，证明 warmup 阻止随机 Tracking 策略迅速吞掉 Motion 样本。首次随机 update
+  KL `0.19683`，仅用于接口验证。
+- 同一 checkpoint 的 100-trial matched-push 评估强制 probability 为 `1`：100/100 fall、
+  100/100 candidates、100/100 进入 Recovery，Recovery target/sample fraction `86.65%`，
+  termination `0`、resumption `0`。这同时验证训练 warmup 与完整评估路径，仍不把随机策略的
+  负对照误报为恢复成功。

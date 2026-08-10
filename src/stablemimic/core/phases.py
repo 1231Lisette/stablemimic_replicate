@@ -14,6 +14,25 @@ class MotionPhase(IntEnum):
     TRANSITION = 2
 
 
+def uncommanded_tracking_fall(
+    root_height: torch.Tensor,
+    root_tilt_radians: torch.Tensor,
+    reference_height: torch.Tensor,
+    reference_tilt_radians: torch.Tensor,
+    *,
+    height_threshold: float,
+    tilt_threshold_radians: float,
+) -> torch.Tensor:
+    """Detect a physical fall only while the commanded Tracking pose is non-fallen."""
+    current_fallen = (root_height < height_threshold) | (
+        root_tilt_radians > tilt_threshold_radians
+    )
+    reference_fallen = (reference_height < height_threshold) | (
+        reference_tilt_radians > tilt_threshold_radians
+    )
+    return current_fallen & ~reference_fallen
+
+
 @dataclass
 class PhaseState:
     phase: torch.Tensor

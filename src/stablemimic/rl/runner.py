@@ -9,14 +9,14 @@ import time
 
 import torch
 
-from stablemimic.config import StableMimicCfg
+from stablemimic.config import StableMimicCfg, fall_recovery_curriculum_probability
 from stablemimic.core.phases import MotionPhase
 from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCritic
 
 from .ppo import PPO
 from .storage import RolloutStorage
 
-TRAINING_SEMANTICS_VERSION = 2
+TRAINING_SEMANTICS_VERSION = 3
 
 
 class StableMimicRunner:
@@ -78,6 +78,14 @@ class StableMimicRunner:
         gate_raw = self.env.unwrapped.gate_observations
         for _ in range(iterations):
             started = time.perf_counter()
+            fall_recovery_probability = fall_recovery_curriculum_probability(
+                self.iteration + 1,
+                self.config.training.fall_recovery_warmup_iterations,
+                self.config.training.fall_recovery_ramp_iterations,
+            )
+            self.env.unwrapped.set_fall_recovery_probability(
+                fall_recovery_probability
+            )
             episode_reward = 0.0
             tracking_reward_sum = 0.0
             recovery_reward_sum = 0.0
@@ -100,6 +108,7 @@ class StableMimicRunner:
                     "recovery_success",
                     "recovery_failure",
                     "transition_completed",
+                    "tracking_fall_candidate",
                     "tracking_fall_entered_recovery",
                     "sequence_termination",
                     "unrecoverable_fall_termination",
@@ -174,6 +183,7 @@ class StableMimicRunner:
             self.iteration += 1
             record = {
                 "iteration": self.iteration,
+                "fall_recovery_probability": fall_recovery_probability,
                 "mean_step_reward": episode_reward / self.config.ppo.rollout_steps,
                 "policy_std": float(self.agent.actor.log_std.exp()),
                 "tracking_mean_reward": tracking_reward_sum / max(tracking_samples, 1),

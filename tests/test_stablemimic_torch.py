@@ -75,6 +75,19 @@ class StableMimicTorchTests(unittest.TestCase):
             state.recovery_error_time, torch.tensor([0.0, 0.8, 0.0])
         ))
 
+    def test_fall_guard_ignores_commanded_floor_motion(self) -> None:
+        from stablemimic.core.phases import uncommanded_tracking_fall
+
+        mask = uncommanded_tracking_fall(
+            torch.tensor([0.3, 0.8, 0.3, 0.8, 0.8]),
+            torch.deg2rad(torch.tensor([10.0, 70.0, 10.0, 70.0, 10.0])),
+            torch.tensor([0.8, 0.8, 0.3, 0.8, 0.8]),
+            torch.deg2rad(torch.tensor([10.0, 10.0, 10.0, 70.0, 10.0])),
+            height_threshold=0.5,
+            tilt_threshold_radians=float(torch.deg2rad(torch.tensor(60.0))),
+        )
+        self.assertEqual(mask.tolist(), [True, True, False, False, False])
+
     def test_nearest_recovery_frame_matches_height_gravity_and_joints(self) -> None:
         import numpy as np
         from stablemimic.motion.lafan1 import LAFAN1_G1_JOINT_NAMES

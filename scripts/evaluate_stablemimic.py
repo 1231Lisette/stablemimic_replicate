@@ -73,6 +73,7 @@ def main() -> None:
     env_cfg.recovery_match_joint_weight = config.environment.recovery_match_joint_weight
     env_cfg.recovery_match_height_weight = config.environment.recovery_match_height_weight
     env_cfg.recovery_match_gravity_weight = config.environment.recovery_match_gravity_weight
+    env_cfg.fall_recovery_probability = 1.0
     env_cfg.observation_noise_std = 0.0
     env_cfg.enable_early_termination = args_cli.enable_early_termination
     env = StableMimicG1Env(env_cfg)
@@ -112,6 +113,7 @@ def main() -> None:
             "recovery_success",
             "recovery_failure",
             "transition_completed",
+            "tracking_fall_candidate",
             "tracking_fall_entered_recovery",
             "sequence_termination",
             "unrecoverable_fall_termination",

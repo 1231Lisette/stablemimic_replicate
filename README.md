@@ -263,6 +263,13 @@ Recovery Actor 看不到 get-up reference；hidden successor 只用于 Critic �
 `if fallen` policy switch。环境中的 fall→Recovery 只为训练 reward、Critic hidden reference
 和 Gate label 建立正确监督；部署 Actor 的输入和输出不含 phase。
 
+50/50 指 reset 分布，不保证随机策略的 rollout phase 仍为 50/50。为避免初期 Tracking
+一摔倒就切走、让 Motion Expert 缺少样本，默认 curriculum 在 iterations 1--100 保持
+fall-switch probability 为 0，在 101--200 从 0.01 线性升到 1.0；Recovery reset 从 iteration 1
+起始终存在，因此 Motion Expert、Recovery Expert、Gate、Critic 全程仍是联合训练。只有物理
+机器人达到 fall criterion、同时当前 Tracking reference 本身不属于低姿态/大倾斜动作时，
+才算 `tracking_fall_candidate`。评估不使用 warmup，始终以 probability 1.0 测试恢复。
+
 当前 RTX 4090 的有效资格规模是 `1024` env。`2048` 虽然显存够，但曾触发 PhysX
 patch-buffer overflow，因此在明确调大并重新验证 PhysX buffer 前不能用；显存占用低不等于
 simulator capacity 已通过。`4096` 更不能仅根据 4.7 GiB 的 1024-env 观测线性推断。
@@ -290,8 +297,9 @@ Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iterat
 
 注意：原子 recovery 切片改变了 motion id、failure histogram 尺寸、terminal target 与
 phase 语义。`joint_ab_std_020`、`joint_paper_aligned_v1`、`joint_terminal_entropy_v1`
-全部只保留作诊断证据，严禁续训。新实验必须从随机初始化建立新目录，例如
-`joint_atomic_recovery_v1`。只有同一 commit、同一配置和同一切片语义的 checkpoint 才可续训。
+与 `joint_atomic_recovery_v1` 全部只保留作诊断证据，严禁续训。新实验必须从随机初始化
+建立新目录，例如 `joint_atomic_warmup_v1`。只有同一 commit、同一配置和同一 curriculum
+语义的 checkpoint 才可续训。
 runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错，避免误续训。
 
 ## 5. 确定性评估
@@ -401,6 +409,8 @@ RUN_DIR/
 至少联合检查：
 
 - `tracking_fall_entered_recovery_count` 是否在推倒/训练中非零；
+- `tracking_fall_candidate_count` 与配置生成的 `fall_recovery_probability`；warmup 中前者可
+  非零，但后者和 entered count 应为 0；
 - `recovery_success_count` 与 `transition_completed_count`；
 - 每 1000 Recovery step 的 success/failure；
 - matched-push 的 `paper_fall_count`、`tracking_resumption_count` 和恢复延迟；
