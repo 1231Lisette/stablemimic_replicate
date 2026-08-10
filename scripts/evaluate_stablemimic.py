@@ -67,6 +67,12 @@ def main() -> None:
         config.environment.recovery_terminal_similarity_threshold
     )
     env_cfg.recovered_like_height_ratio = config.environment.recovered_like_height_ratio
+    env_cfg.tracking_fall_recovery_enabled = config.environment.tracking_fall_recovery_enabled
+    env_cfg.tracking_fall_height_threshold = config.environment.tracking_fall_height_threshold
+    env_cfg.tracking_fall_tilt_degrees = config.environment.tracking_fall_tilt_degrees
+    env_cfg.recovery_match_joint_weight = config.environment.recovery_match_joint_weight
+    env_cfg.recovery_match_height_weight = config.environment.recovery_match_height_weight
+    env_cfg.recovery_match_gravity_weight = config.environment.recovery_match_gravity_weight
     env_cfg.observation_noise_std = 0.0
     env_cfg.enable_early_termination = args_cli.enable_early_termination
     env = StableMimicG1Env(env_cfg)
@@ -106,6 +112,7 @@ def main() -> None:
             "recovery_success",
             "recovery_failure",
             "transition_completed",
+            "tracking_fall_entered_recovery",
             "sequence_termination",
             "unrecoverable_fall_termination",
             "timeout",

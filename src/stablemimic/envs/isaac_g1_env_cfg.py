@@ -28,6 +28,12 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     recovery_failure_similarity_threshold: float = 0.05
     recovery_terminal_similarity_threshold: float = 0.70
     recovered_like_height_ratio: float = 0.8
+    tracking_fall_recovery_enabled: bool = True
+    tracking_fall_height_threshold: float = 0.5
+    tracking_fall_tilt_degrees: float = 60.0
+    recovery_match_joint_weight: float = 1.0
+    recovery_match_height_weight: float = 4.0
+    recovery_match_gravity_weight: float = 2.0
     observation_noise_std: float = 0.0
     enable_early_termination: bool = True
 

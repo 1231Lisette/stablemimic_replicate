@@ -13,3 +13,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.model.expert_hidden_dims, (512, 256, 128))
         self.assertEqual(config.model.initial_std, 0.2)
         self.assertEqual(config.ppo.rollout_steps, 24)
+        self.assertTrue(config.recovery_segmentation.enabled)
+        self.assertEqual(config.recovery_segmentation.hold_time_s, 0.5)
+        self.assertTrue(config.environment.tracking_fall_recovery_enabled)
+        self.assertEqual(config.environment.tracking_fall_height_threshold, 0.5)

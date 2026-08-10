@@ -20,7 +20,26 @@ environment:
   recovery_terminal_similarity_threshold: 0.70 # reproduction choice
   tracking_resumption_similarity_threshold: 0.70 # evaluation-only reproduction choice
   recovered_like_height_ratio: 0.8
+  # Paper fall criterion. Entering Recovery and nearest-reference matching are
+  # reproduction choices needed to train on states reached from Tracking.
+  tracking_fall_recovery_enabled: true
+  tracking_fall_height_threshold: 0.5
+  tracking_fall_tilt_degrees: 60.0
+  recovery_match_joint_weight: 1.0
+  recovery_match_height_weight: 4.0
+  recovery_match_gravity_weight: 2.0
   observation_noise_std: 0.0       # reproduction choice; disabled baseline
+
+# The public files contain repeated falls/get-ups. Treating each 102--168 s
+# file as one trajectory gives it one wrong terminal target, so split it first.
+recovery_segmentation:
+  enabled: true
+  fallen_height_threshold: 0.5
+  fallen_tilt_degrees: 60.0
+  upright_height_threshold: 0.7
+  upright_tilt_degrees: 30.0
+  hold_time_s: 0.5
+  maximum_clip_duration_s: 20.0
 
 reset_noise:
   root_xy: [-0.05, 0.05]

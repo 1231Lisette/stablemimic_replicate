@@ -46,7 +46,24 @@ class EnvironmentCfg:
     recovery_terminal_similarity_threshold: float = 0.70
     tracking_resumption_similarity_threshold: float = 0.70
     recovered_like_height_ratio: float = 0.8
+    tracking_fall_recovery_enabled: bool = True
+    tracking_fall_height_threshold: float = 0.5
+    tracking_fall_tilt_degrees: float = 60.0
+    recovery_match_joint_weight: float = 1.0
+    recovery_match_height_weight: float = 4.0
+    recovery_match_gravity_weight: float = 2.0
     observation_noise_std: float = 0.0
+
+
+@dataclass(frozen=True)
+class RecoverySegmentationCfg:
+    enabled: bool = True
+    fallen_height_threshold: float = 0.5
+    fallen_tilt_degrees: float = 60.0
+    upright_height_threshold: float = 0.7
+    upright_tilt_degrees: float = 30.0
+    hold_time_s: float = 0.5
+    maximum_clip_duration_s: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -93,6 +110,7 @@ class StableMimicCfg:
     data_root: Path
     output_root: Path
     environment: EnvironmentCfg
+    recovery_segmentation: RecoverySegmentationCfg
     reward: RewardCfg
     model: ModelCfg
     ppo: PpoCfg
@@ -124,6 +142,25 @@ def load_config(path: str | Path) -> StableMimicCfg:
         raise ValueError("environment.tracking_resumption_similarity_threshold must be in (0, 1]")
     if env.recovery_failure_similarity_threshold >= env.recovery_terminal_similarity_threshold:
         raise ValueError("recovery failure similarity threshold must be below terminal threshold")
+    if env.tracking_fall_height_threshold <= 0.0:
+        raise ValueError("environment.tracking_fall_height_threshold must be positive")
+    if not 0.0 < env.tracking_fall_tilt_degrees < 180.0:
+        raise ValueError("environment.tracking_fall_tilt_degrees must be in (0, 180)")
+    if min(
+        env.recovery_match_joint_weight,
+        env.recovery_match_height_weight,
+        env.recovery_match_gravity_weight,
+    ) < 0.0:
+        raise ValueError("recovery matching weights must be non-negative")
+    segmentation = RecoverySegmentationCfg(**raw.get("recovery_segmentation", {}))
+    if segmentation.fallen_height_threshold <= 0.0:
+        raise ValueError("recovery_segmentation.fallen_height_threshold must be positive")
+    if segmentation.upright_height_threshold <= segmentation.fallen_height_threshold:
+        raise ValueError("upright height threshold must exceed fallen height threshold")
+    if not 0.0 < segmentation.upright_tilt_degrees < segmentation.fallen_tilt_degrees < 180.0:
+        raise ValueError("recovery segmentation tilt thresholds must satisfy 0 < upright < fallen < 180")
+    if segmentation.hold_time_s <= 0.0 or segmentation.maximum_clip_duration_s <= 0.0:
+        raise ValueError("recovery segmentation durations must be positive")
     reward_raw = raw["reward"]
     reward = RewardCfg(
         **{name: _kernel(reward_raw[name]) for name in (
@@ -145,6 +182,7 @@ def load_config(path: str | Path) -> StableMimicCfg:
         data_root=Path(raw["data_root"]),
         output_root=Path(raw["output_root"]),
         environment=env,
+        recovery_segmentation=segmentation,
         reward=reward,
         model=ModelCfg(**model_raw),
         ppo=PpoCfg(**raw["ppo"]),

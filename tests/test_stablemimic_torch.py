@@ -58,6 +58,63 @@ class StableMimicTorchTests(unittest.TestCase):
         state.update(torch.zeros(2), torch.zeros(2), 0.75, 0.05, 0.7)
         self.assertTrue(torch.allclose(state.gate_target()[1], torch.tensor([0.5, 0.5])))
 
+    def test_tracking_fall_can_enter_recovery_without_reset(self) -> None:
+        from stablemimic.core.phases import MotionPhase, PhaseState
+
+        state = PhaseState.create(3, "cpu")
+        state.transition_time[:] = 0.7
+        state.recovery_error_time[:] = 0.8
+        state.enter_recovery(torch.tensor([0, 2]))
+        self.assertEqual(state.phase.tolist(), [
+            MotionPhase.RECOVERY, MotionPhase.TRACKING, MotionPhase.RECOVERY
+        ])
+        self.assertTrue(torch.allclose(
+            state.transition_time, torch.tensor([0.0, 0.7, 0.0])
+        ))
+        self.assertTrue(torch.allclose(
+            state.recovery_error_time, torch.tensor([0.0, 0.8, 0.0])
+        ))
+
+    def test_nearest_recovery_frame_matches_height_gravity_and_joints(self) -> None:
+        import numpy as np
+        from stablemimic.motion.lafan1 import LAFAN1_G1_JOINT_NAMES
+        from stablemimic.motion.reference import MotionReference
+        from stablemimic.motion.torch_library import TorchMotionLibrary
+
+        quaternion = np.array([[0.0, 0.0, 0.0, 1.0]] * 2)
+        low = MotionReference(
+            "low", 30.0, LAFAN1_G1_JOINT_NAMES,
+            np.array([[0.0, 0.0, 0.25], [0.0, 0.0, 0.30]]),
+            quaternion,
+            np.zeros((2, 29)),
+        )
+        high = MotionReference(
+            "high", 30.0, LAFAN1_G1_JOINT_NAMES,
+            np.array([[0.0, 0.0, 0.75], [0.0, 0.0, 0.80]]),
+            quaternion,
+            np.ones((2, 29)),
+        )
+        library = TorchMotionLibrary((low, high), "cpu")
+        motion_ids, times = library.nearest_frame(
+            torch.tensor([0.79, 0.26]),
+            torch.tensor([[0.0, 0.0, -1.0], [0.0, 0.0, -1.0]]),
+            torch.stack((torch.ones(29), torch.zeros(29))),
+        )
+        self.assertEqual(motion_ids.tolist(), [1, 0])
+        self.assertAlmostEqual(float(times[0]), 1.0 / 30.0, places=6)
+        self.assertEqual(float(times[1]), 0.0)
+
+        sampled = library.sample(
+            torch.tensor([0, 0, 1, 1]),
+            torch.tensor([0.0, 1.0 / 30.0, 0.5 / 30.0, 1.0 / 30.0]),
+        )
+        self.assertTrue(torch.allclose(
+            sampled.root_pos[:, 2], torch.tensor([0.25, 0.30, 0.775, 0.80])
+        ))
+        self.assertTrue(torch.allclose(
+            sampled.joint_pos[:, 0], torch.tensor([0.0, 0.0, 1.0, 1.0])
+        ))
+
     def test_phase_separates_active_failure_from_terminal_success(self) -> None:
         from stablemimic.core.phases import MotionPhase, PhaseState
 

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
+from stablemimic.config import RecoverySegmentationCfg
+
 from .reference import MotionReference
 
 LAFAN1_G1_FPS = 30.0
@@ -93,3 +95,76 @@ def load_lafan1_csv(path: str | Path, *, fps: float = LAFAN1_G1_FPS) -> MotionRe
         root_quat_xyzw=data[:, 3:7],
         joint_pos=data[:, 7:36],
     )
+
+
+def _root_tilt_degrees(root_quat_xyzw: np.ndarray) -> np.ndarray:
+    quaternion = root_quat_xyzw / np.linalg.norm(root_quat_xyzw, axis=1, keepdims=True)
+    x, y = quaternion[:, 0], quaternion[:, 1]
+    upright_cosine = np.clip(1.0 - 2.0 * (x * x + y * y), -1.0, 1.0)
+    return np.rad2deg(np.arccos(upright_cosine))
+
+
+def _first_sustained(mask: np.ndarray, start: int, frames: int) -> int | None:
+    """Return the first run start at or after ``start`` that lasts ``frames``."""
+    run = 0
+    for index in range(start, len(mask)):
+        run = run + 1 if bool(mask[index]) else 0
+        if run >= frames:
+            return index - frames + 1
+    return None
+
+
+def segment_recovery_motion(
+    motion: MotionReference, config: RecoverySegmentationCfg
+) -> tuple[MotionReference, ...]:
+    """Split a repeated recording into sustained fallen-to-upright clips.
+
+    The public LAFAN1 recovery CSVs are session recordings, not atomic
+    trajectories.  This deterministic state machine is an explicit
+    reproduction choice; it never interpolates or joins disjoint clips.
+    """
+    if not config.enabled:
+        return (motion,)
+    hold_frames = max(1, int(round(config.hold_time_s * motion.fps)))
+    tilt = _root_tilt_degrees(motion.root_quat_xyzw)
+    fallen = (motion.root_pos[:, 2] < config.fallen_height_threshold) | (
+        tilt > config.fallen_tilt_degrees
+    )
+    upright = (motion.root_pos[:, 2] >= config.upright_height_threshold) & (
+        tilt <= config.upright_tilt_degrees
+    )
+    clips: list[MotionReference] = []
+    cursor = 0
+    while cursor < motion.num_frames:
+        fall_start = _first_sustained(fallen, cursor, hold_frames)
+        if fall_start is None:
+            break
+        upright_start = _first_sustained(upright, fall_start + hold_frames, hold_frames)
+        if upright_start is None:
+            break
+        end = upright_start + hold_frames - 1
+        duration = (end - fall_start) / motion.fps
+        if duration <= config.maximum_clip_duration_s:
+            clip_index = len(clips)
+            frame_slice = slice(fall_start, end + 1)
+            clips.append(MotionReference(
+                name=f"{motion.name}__recovery_{clip_index:03d}",
+                fps=motion.fps,
+                joint_names=motion.joint_names,
+                root_pos=motion.root_pos[frame_slice],
+                root_quat_xyzw=motion.root_quat_xyzw[frame_slice],
+                joint_pos=motion.joint_pos[frame_slice],
+            ))
+        cursor = end + 1
+    if not clips:
+        raise ValueError(f"No valid fall-to-upright clips detected in recovery motion {motion.name!r}")
+    return tuple(clips)
+
+
+def load_segmented_recovery_motions(
+    paths: tuple[Path, ...], config: RecoverySegmentationCfg
+) -> tuple[MotionReference, ...]:
+    clips: list[MotionReference] = []
+    for path in paths:
+        clips.extend(segment_recovery_motion(load_lafan1_csv(path), config))
+    return tuple(clips)

@@ -7,7 +7,15 @@ from pathlib import Path
 
 import torch
 
-from .lafan1 import MotionLibraries, discover_motion_libraries, load_lafan1_csv
+from stablemimic.config import RecoverySegmentationCfg
+from stablemimic.core.geometry import projected_gravity_from_xyzw
+
+from .lafan1 import (
+    MotionLibraries,
+    discover_motion_libraries,
+    load_lafan1_csv,
+    load_segmented_recovery_motions,
+)
 from .reference import MotionReference
 
 
@@ -76,6 +84,27 @@ class TorchMotionLibrary:
         self.joint_pos = tuple(torch.as_tensor(m.joint_pos, dtype=torch.float32, device=device) for m in motions)
         self.lengths = torch.tensor([m.num_frames for m in motions], dtype=torch.long, device=device)
         self.durations = torch.tensor([m.duration for m in motions], dtype=torch.float32, device=device)
+        self._fps_tensor = torch.tensor(self.fps, dtype=torch.float32, device=device)
+        self._root_pos_padded = torch.nn.utils.rnn.pad_sequence(
+            self.root_pos, batch_first=True
+        )
+        self._root_quat_padded = torch.nn.utils.rnn.pad_sequence(
+            self.root_quat, batch_first=True
+        )
+        self._joint_pos_padded = torch.nn.utils.rnn.pad_sequence(
+            self.joint_pos, batch_first=True
+        )
+        self._frame_motion_ids = torch.cat([
+            torch.full((m.num_frames,), index, dtype=torch.long, device=device)
+            for index, m in enumerate(motions)
+        ])
+        self._frame_times = torch.cat([
+            torch.arange(m.num_frames, dtype=torch.float32, device=device) / m.fps
+            for m in motions
+        ])
+        self._frame_root_height = torch.cat([values[:, 2] for values in self.root_pos])
+        self._frame_projected_gravity = projected_gravity_from_xyzw(torch.cat(self.root_quat))
+        self._frame_joint_pos = torch.cat(self.joint_pos)
 
     @classmethod
     def from_paths(cls, paths: tuple[Path, ...], device: torch.device | str) -> "TorchMotionLibrary":
@@ -94,34 +123,80 @@ class TorchMotionLibrary:
     def sample(self, motion_ids: torch.Tensor, times: torch.Tensor) -> TorchMotionSample:
         if motion_ids.shape != times.shape or motion_ids.ndim != 1:
             raise ValueError("motion_ids and times must be matching rank-one tensors")
-        count = motion_ids.numel()
-        result = {
-            "root_pos": torch.empty(count, 3, device=self.device),
-            "root_quat_xyzw": torch.empty(count, 4, device=self.device),
-            "joint_pos": torch.empty(count, 29, device=self.device),
-            "root_lin_vel_world": torch.empty(count, 3, device=self.device),
-            "root_ang_vel_world": torch.empty(count, 3, device=self.device),
-            "joint_vel": torch.empty(count, 29, device=self.device),
-            "normalized_phase": torch.empty(count, 1, device=self.device),
-        }
-        for motion_id in motion_ids.unique(sorted=True).tolist():
-            mask = motion_ids == motion_id
-            duration = self.durations[motion_id]
-            sampled_time = times[mask].clamp(0.0, duration)
-            coordinate = sampled_time * self.fps[motion_id]
-            lower = torch.floor(coordinate).long().clamp(max=int(self.lengths[motion_id]) - 2)
-            upper = lower + 1
-            alpha = (coordinate - lower.float()).unsqueeze(-1)
-            positions, quaternions, joints = self.root_pos[motion_id], self.root_quat[motion_id], self.joint_pos[motion_id]
-            dt = 1.0 / self.fps[motion_id]
-            result["root_pos"][mask] = torch.lerp(positions[lower], positions[upper], alpha)
-            result["root_quat_xyzw"][mask] = _slerp(quaternions[lower], quaternions[upper], alpha)
-            result["joint_pos"][mask] = torch.lerp(joints[lower], joints[upper], alpha)
-            result["root_lin_vel_world"][mask] = (positions[upper] - positions[lower]) / dt
-            result["root_ang_vel_world"][mask] = _angular_velocity(quaternions[lower], quaternions[upper], dt)
-            result["joint_vel"][mask] = (joints[upper] - joints[lower]) / dt
-            result["normalized_phase"][mask] = (sampled_time / duration.clamp_min(1.0e-6)).unsqueeze(-1)
-        return TorchMotionSample(**result)
+        duration = self.durations[motion_ids]
+        sampled_time = torch.minimum(times.clamp_min(0.0), duration)
+        fps = self._fps_tensor[motion_ids]
+        coordinate = sampled_time * fps
+        lower = torch.minimum(
+            torch.floor(coordinate).long(), self.lengths[motion_ids] - 2
+        )
+        upper = lower + 1
+        alpha = (coordinate - lower.float()).unsqueeze(-1)
+        positions_lower = self._root_pos_padded[motion_ids, lower]
+        positions_upper = self._root_pos_padded[motion_ids, upper]
+        quaternions_lower = self._root_quat_padded[motion_ids, lower]
+        quaternions_upper = self._root_quat_padded[motion_ids, upper]
+        joints_lower = self._joint_pos_padded[motion_ids, lower]
+        joints_upper = self._joint_pos_padded[motion_ids, upper]
+        dt = (1.0 / fps).unsqueeze(-1)
+        return TorchMotionSample(
+            root_pos=torch.lerp(positions_lower, positions_upper, alpha),
+            root_quat_xyzw=_slerp(quaternions_lower, quaternions_upper, alpha),
+            joint_pos=torch.lerp(joints_lower, joints_upper, alpha),
+            root_lin_vel_world=(positions_upper - positions_lower) / dt,
+            root_ang_vel_world=_angular_velocity(
+                quaternions_lower, quaternions_upper, dt
+            ),
+            joint_vel=(joints_upper - joints_lower) / dt,
+            normalized_phase=(sampled_time / duration.clamp_min(1.0e-6)).unsqueeze(-1),
+        )
+
+    def nearest_frame(
+        self,
+        root_height: torch.Tensor,
+        projected_gravity: torch.Tensor,
+        joint_pos: torch.Tensor,
+        *,
+        joint_weight: float = 1.0,
+        height_weight: float = 4.0,
+        gravity_weight: float = 2.0,
+        query_chunk_size: int = 64,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Match physical states to source frames without materializing N×M×29."""
+        count = root_height.shape[0]
+        if projected_gravity.shape != (count, 3) or joint_pos.shape != (count, 29):
+            raise ValueError("nearest-frame state shapes must be (N,), (N, 3), and (N, 29)")
+        if min(joint_weight, height_weight, gravity_weight) < 0.0:
+            raise ValueError("nearest-frame weights must be non-negative")
+        matches: list[torch.Tensor] = []
+        bank_joint_norm = self._frame_joint_pos.square().mean(dim=1)
+        bank_gravity_norm = self._frame_projected_gravity.square().mean(dim=1)
+        for start in range(0, count, query_chunk_size):
+            stop = min(start + query_chunk_size, count)
+            query_joint = joint_pos[start:stop]
+            joint_distance = (
+                query_joint.square().mean(dim=1, keepdim=True)
+                + bank_joint_norm.unsqueeze(0)
+                - (2.0 / query_joint.shape[1]) * query_joint @ self._frame_joint_pos.T
+            )
+            query_gravity = projected_gravity[start:stop]
+            gravity_distance = (
+                query_gravity.square().mean(dim=1, keepdim=True)
+                + bank_gravity_norm.unsqueeze(0)
+                - (2.0 / query_gravity.shape[1])
+                * query_gravity @ self._frame_projected_gravity.T
+            )
+            height_distance = (
+                root_height[start:stop, None] - self._frame_root_height[None, :]
+            ).square()
+            score = (
+                joint_weight * joint_distance
+                + height_weight * height_distance
+                + gravity_weight * gravity_distance
+            )
+            matches.append(score.argmin(dim=1))
+        frame_ids = torch.cat(matches) if matches else torch.empty(0, dtype=torch.long, device=self.device)
+        return self._frame_motion_ids[frame_ids], self._frame_times[frame_ids]
 
 
 @dataclass(frozen=True)
@@ -130,11 +205,18 @@ class TorchMotionLibraries:
     recovery: TorchMotionLibrary
 
 
-def load_torch_motion_libraries(data_root: str | Path, device: torch.device | str) -> TorchMotionLibraries:
+def load_torch_motion_libraries(
+    data_root: str | Path,
+    device: torch.device | str,
+    recovery_segmentation: RecoverySegmentationCfg | None = None,
+) -> TorchMotionLibraries:
     paths: MotionLibraries = discover_motion_libraries(data_root)
+    segmentation = recovery_segmentation or RecoverySegmentationCfg()
     return TorchMotionLibraries(
         tracking=TorchMotionLibrary.from_paths(paths.tracking, device),
-        recovery=TorchMotionLibrary.from_paths(paths.recovery, device),
+        recovery=TorchMotionLibrary(
+            load_segmented_recovery_motions(paths.recovery, segmentation), device
+        ),
     )
 
 

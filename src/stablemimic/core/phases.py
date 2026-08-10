@@ -46,6 +46,12 @@ class PhaseState:
         self.transition_time[env_ids] = 0.0
         self.recovery_error_time[env_ids] = 0.0
 
+    def enter_recovery(self, env_ids: torch.Tensor) -> None:
+        """Enter Recovery without resetting the physical state or policy history."""
+        self.phase[env_ids] = int(MotionPhase.RECOVERY)
+        self.transition_time[env_ids] = 0.0
+        self.recovery_error_time[env_ids] = 0.0
+
     def update(
         self, active_similarity: torch.Tensor, terminal_similarity: torch.Tensor, dt: float,
         failure_similarity_threshold: float, terminal_similarity_threshold: float,

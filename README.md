@@ -7,10 +7,14 @@ arXiv:2608.02385 构建。
 
 代码栈已经覆盖：
 
-- 严格的 36 列 LAFAN1 CSV loader，8 个 `dance` 与 6 个 `fallAndGetUp` 序列分库；
+- 严格的 36 列 LAFAN1 CSV loader，8 个 `dance` 与 6 个 `fallAndGetUp` 文件分库；
+- 将 102--168 秒、包含重复事件的 recovery 文件切为原子“持续倒地→持续直立”片段，
+  每个片段拥有自己的 terminal reference；
 - 30 FPS reference 在 50 Hz policy clock 上的线性插值、四元数 SLERP 和速度派生；
 - Isaac Lab G1 29 个 body joint 到运行时 43 joint articulation 的显式映射；
 - Tracking / Recovery / 1.5 秒 Transition 三阶段状态机与水平 reference realignment；
+- Tracking 中达到论文 fall criterion 后，用高度、projected gravity 和 29 关节姿态匹配
+  最近 recovery 帧并进入 Recovery 监督，不重置物理状态；
 - 论文对应的六类 whole-body Gaussian tracking error；
 - 4 帧 Actor / Gate / Critic history，维度严格为 884 / 372 / 1428；
 - 两个 512-256-128 ELU Expert、proprioceptive softmax Gate、29-D soft-fused mean；
@@ -25,6 +29,38 @@ arXiv:2608.02385 构建。
 
 本次代码完整性验收记录见
 [`docs/CODE_COMPLETE_VALIDATION.md`](docs/CODE_COMPLETE_VALIDATION.md)。
+历史错误、修正依据和全部已运行实验见
+[`docs/EXPERIMENT_LOG.md`](docs/EXPERIMENT_LOG.md)。
+
+## 仓库结构
+
+```text
+stablemimic_replicate/
+├── configs/
+│   ├── stablemimic_g1.yaml       # 唯一主配置：环境、切片、奖励、网络、PPO
+│   └── motion/lafan1_g1.yaml     # LAFAN1/G1 数据约定
+├── src/stablemimic/
+│   ├── config.py                 # YAML → 强类型配置及合法性检查
+│   ├── motion/                   # CSV loader、原子 recovery 切片、GPU 插值/采样
+│   ├── core/                     # 四元数、observation/history、phase 状态机
+│   ├── envs/                     # Isaac Lab G1 环境、reset/reward/fall curriculum
+│   ├── rewards/                  # 六类 whole-body tracking kernel
+│   ├── models/                   # Motion Expert、Recovery Expert、Gate、Critic
+│   ├── rl/                       # rollout、GAE、PPO、checkpoint、训练指标
+│   ├── eval/                     # matched-push protocol
+│   ├── export/                   # ONNX 导出边界
+│   └── sim/                      # G1 29→43 joint mapping、关闭 watchdog
+├── scripts/
+│   ├── audit_lafan1.py           # 数据/原子 recovery clip 审计
+│   ├── train_stablemimic.py      # tracking/recovery/joint 训练与续训
+│   ├── evaluate_stablemimic.py   # Isaac 确定性/推倒评估
+│   ├── evaluate_mujoco.py        # MuJoCo adapter 边界
+│   ├── export_onnx.py            # 导出 deployable Actor
+│   ├── verify_onnx.py            # PyTorch/ONNX 数值一致性
+│   └── visualize_lafan1_g1.py    # reference 可视化
+├── tests/                        # loader、切片、phase、PPO、评估协议回归测试
+└── docs/                         # 验收、视觉证据、实验记录
+```
 
 ## 论文事实与复现选择
 
@@ -61,6 +97,11 @@ Recovery 的三个相似度用途已经明确分开，不能互相替代：
 每动作维平均 entropy 上，避免相同系数被动作维数额外放大 29 倍。论文没有公布 entropy
 的维度 reduction，因此这一 reduction 也明确属于 reproduction choice。
 
+公开 recovery CSV 不是六条 get-up trajectory，而是六段包含多次倒地/起身的长录像。
+`recovery_segmentation` 用论文 fall threshold 与显式的直立/持续时间阈值切片，并丢弃超过
+20 秒 episode horizon 的片段。切片和最近帧匹配阈值均是公开代码缺失后的复现选择。
+Actor/Gate 看不到所匹配的 motion id、frame、phase 或 hidden recovery successor。
+
 ## 信息边界
 
 | 信息 | Expert | Gate | Critic | Reset/Reward | 部署 |
@@ -85,6 +126,27 @@ CSV : /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
 运行输出: /root/gpufree-data/stablemimic_replicate/runs
 ```
 
+首次部署：
+
+```bash
+cd /root/gpufree-share
+git clone https://github.com/1231Lisette/stablemimic_replicate.git
+mkdir -p /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
+mkdir -p /root/gpufree-data/stablemimic_replicate/runs
+```
+
+把官方 [LAFAN1 Retargeting Dataset 的 G1 CSV](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset/tree/main/g1)
+中的 8 个 `dance*.csv` 和 6 个 `fallAndGetUp*.csv` 放入上述 CSV 目录。仓库不复制大数据或
+checkpoint；数据和运行输出全部留在 `gpu_data`。服务器镜像需要已有
+`/workspace/isaaclab/isaaclab.sh` 与 `/isaac-sim/python.sh`。
+
+以后更新代码：
+
+```bash
+cd /root/gpufree-share/stablemimic_replicate
+git pull --ff-only origin main
+```
+
 请始终从代码目录运行：
 
 ```bash
@@ -107,6 +169,11 @@ LAFAN1_G1_ROOT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1 \
 /workspace/isaaclab/isaaclab.sh -p scripts/audit_lafan1.py \
   --data-root /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
 ```
+
+当前 14 文件数据应输出 `recovery_atomic_clips: 86`，时长范围约 `1.6--17.1 s`、中位数
+约 `4.93 s`。状态机先检测到 89 个原始 cycle，其中 3 个超过 20 秒 episode horizon，按
+配置明确排除。如果输出仍为 `6`，说明仍在错误地按整文件训练；数量不一致或脚本报错时，
+应先检查阈值/数据版本，不能启动训练。
 
 检查 G1、29→43 mapping 与 50 Hz physics step：
 
@@ -139,11 +206,13 @@ LAFAN1_G1_ROOT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1 \
 [PASS] Training run completed.
 ```
 
-## 3. 分阶段训练
+## 3. 训练
 
-建议不要一上来直接运行 joint long training。
+论文式主实验是 `joint`：Motion Expert、Recovery Expert、proprioceptive Gate 与 Critic
+在同一次 PPO update 中一起训练。`tracking` 和 `recovery` 模式只用于诊断/消融，不是必须
+先后预训练的三个模型；proprioceptive 部分是 Gate，不是第三个 Expert。
 
-### 3.1 Tracking-only
+### 3.1 Tracking-only（诊断）
 
 只从 `dance*.csv` reset：
 
@@ -161,7 +230,7 @@ LAFAN1_G1_ROOT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1 \
 环境数和迭代数。配置保留论文的 4096 env，但单张 24 GB RTX 4090 上本实现同时维护
 controlled/reference 两套 articulation，应从 256 或 512 env 起逐级测试显存。
 
-### 3.2 Recovery-only
+### 3.2 Recovery-only（诊断）
 
 只从 `fallAndGetUp*.csv` 的均匀/失败自适应混合分布 reset：
 
@@ -177,13 +246,13 @@ controlled/reference 两套 articulation，应从 256 或 512 env 起逐级测�
 
 Recovery Actor 看不到 get-up reference；hidden successor 只用于 Critic 和 reward。
 
-### 3.3 50/50 joint training
+### 3.3 50/50 joint training（主实验）
 
 ```bash
 /workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
   --config configs/stablemimic_g1.yaml \
   --mode joint \
-  --num-envs 512 \
+  --num-envs 1024 \
   --iterations 10000 \
   --run-dir /root/gpufree-data/stablemimic_replicate/runs/joint_v1 \
   --headless
@@ -191,7 +260,12 @@ Recovery Actor 看不到 get-up reference；hidden successor 只用于 Critic �
 
 `joint` 使用配置中的 `tracking_reset_probability: 0.5`。两个 Expert 始终输出
 29-D mean，Gate 只看 proprioceptive history，并连续 soft fusion，不存在硬编码
-`if fallen` policy switch。
+`if fallen` policy switch。环境中的 fall→Recovery 只为训练 reward、Critic hidden reference
+和 Gate label 建立正确监督；部署 Actor 的输入和输出不含 phase。
+
+当前 RTX 4090 的有效资格规模是 `1024` env。`2048` 虽然显存够，但曾触发 PhysX
+patch-buffer overflow，因此在明确调大并重新验证 PhysX buffer 前不能用；显存占用低不等于
+simulator capacity 已通过。`4096` 更不能仅根据 4.7 GiB 的 1024-env 观测线性推断。
 
 Actor 按论文描述使用共享标量方差的高斯动作。`environment.action_clip` 是论文未公布的
 复现选项，默认 `100.0`，在正常范围内等效为不截断，确保 PPO 保存的采样动作与 simulator
@@ -214,9 +288,11 @@ Actor 按论文描述使用共享标量方差的高斯动作。`environment.acti
 
 Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iteration 和配置快照。
 
-注意：奖励/phase/entropy 语义修改后，旧的 `joint_ab_std_020` 与
-`joint_paper_aligned_v1` checkpoint 只保留作诊断证据，不应续训。请从随机初始化建立新的
-run directory。
+注意：原子 recovery 切片改变了 motion id、failure histogram 尺寸、terminal target 与
+phase 语义。`joint_ab_std_020`、`joint_paper_aligned_v1`、`joint_terminal_entropy_v1`
+全部只保留作诊断证据，严禁续训。新实验必须从随机初始化建立新目录，例如
+`joint_atomic_recovery_v1`。只有同一 commit、同一配置和同一切片语义的 checkpoint 才可续训。
+runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错，避免误续训。
 
 ## 5. 确定性评估
 
@@ -249,7 +325,8 @@ run directory。
 该模式强制所有环境从正常 Tracking 状态开始，再在第 50 个 policy step 同时施加
 matched push；不会混入 Recovery reset。
 
-评估默认关闭训练期的 early fall/failure reset，使机器人摔倒后仍能继续执行策略。
+评估默认关闭训练期的 early fall/failure reset；Recovery 片段到末端但尚未成功时也会保持
+terminal reference，而不会偷偷 reset 被推倒的机器人，使机器人摔倒后仍能继续执行策略。
 JSON 中的 `paper_fall_count` 使用论文明确给出的判据：root/pelvis 高度低于 0.5 m，
 或 root tilt 大于 60°。论文没有公开“恢复后重新跟踪”的精确阈值，因此本复现把
 `tracking_resumption_count` 定义为连续 0.5 秒同时满足：高度至少为命令高度的 80%、
@@ -317,7 +394,23 @@ RUN_DIR/
 数据集、训练输出和模型均放在 `gpu_data` 数据盘；Git 仓库只保存代码、配置、测试和
 小型视觉验收证据。
 
-## 8. 已知环境行为
+## 8. 如何判断训练有没有真的变好
+
+不要只看 total reward 或某一时刻的 `transition_sample_fraction`。Transition 是固定 1.5 秒
+的短暂 occupancy，比例下降可能只是 reset/事件频率改变，不能直接说明 Recovery 变差。
+至少联合检查：
+
+- `tracking_fall_entered_recovery_count` 是否在推倒/训练中非零；
+- `recovery_success_count` 与 `transition_completed_count`；
+- 每 1000 Recovery step 的 success/failure；
+- matched-push 的 `paper_fall_count`、`tracking_resumption_count` 和恢复延迟；
+- KL、policy std、action clipping、NaN/Inf 与 PhysX/CUDA 错误。
+
+`reference similarity` 是物理状态和参考姿态/速度经过六类 Gaussian kernel 后的归一化相似度，
+不是图像相似度，也不是 Gate 概率。active similarity 用于当前恢复帧 imitation/严重偏离判断；
+terminal similarity 只判断是否到达该原子片段末端的稳定站立姿态。
+
+## 9. 已知环境行为
 
 当前 Isaac Sim 5.1 容器偶尔会在 `SimulationApp.close()` 阻塞。CLI 在成功输出
 `[PASS]` 后使用 15 秒 watchdog 释放进程；异常路径会先打印 traceback 并返回非零，

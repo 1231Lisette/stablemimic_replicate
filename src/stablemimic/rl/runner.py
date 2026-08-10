@@ -16,6 +16,8 @@ from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCr
 from .ppo import PPO
 from .storage import RolloutStorage
 
+TRAINING_SEMANTICS_VERSION = 2
+
 
 class StableMimicRunner:
     def __init__(self, env, config: StableMimicCfg, run_dir: str | Path):
@@ -40,6 +42,13 @@ class StableMimicRunner:
 
     def load(self, checkpoint: str | Path) -> None:
         payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
+        version = payload.get("training_semantics_version")
+        if version != TRAINING_SEMANTICS_VERSION:
+            raise ValueError(
+                "Checkpoint training semantics are incompatible: expected "
+                f"{TRAINING_SEMANTICS_VERSION}, got {version!r}. Start a fresh run after "
+                "atomic recovery segmentation/fall-curriculum changes."
+            )
         self.agent.load_state_dict(payload["agent"])
         self.ppo.optimizer.load_state_dict(payload["optimizer"])
         self.iteration = int(payload["iteration"])
@@ -52,6 +61,7 @@ class StableMimicRunner:
         torch.save(
             {
                 "iteration": self.iteration,
+                "training_semantics_version": TRAINING_SEMANTICS_VERSION,
                 "agent": self.agent.state_dict(),
                 "optimizer": self.ppo.optimizer.state_dict(),
                 "environment_training_state": self.env.unwrapped.training_state(),
@@ -90,6 +100,7 @@ class StableMimicRunner:
                     "recovery_success",
                     "recovery_failure",
                     "transition_completed",
+                    "tracking_fall_entered_recovery",
                     "sequence_termination",
                     "unrecoverable_fall_termination",
                     "timeout",

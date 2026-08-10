@@ -69,6 +69,24 @@ def main() -> None:
     env_cfg.recovered_like_height_ratio = (
         repository_config.environment.recovered_like_height_ratio
     )
+    env_cfg.tracking_fall_recovery_enabled = (
+        repository_config.environment.tracking_fall_recovery_enabled
+    )
+    env_cfg.tracking_fall_height_threshold = (
+        repository_config.environment.tracking_fall_height_threshold
+    )
+    env_cfg.tracking_fall_tilt_degrees = (
+        repository_config.environment.tracking_fall_tilt_degrees
+    )
+    env_cfg.recovery_match_joint_weight = (
+        repository_config.environment.recovery_match_joint_weight
+    )
+    env_cfg.recovery_match_height_weight = (
+        repository_config.environment.recovery_match_height_weight
+    )
+    env_cfg.recovery_match_gravity_weight = (
+        repository_config.environment.recovery_match_gravity_weight
+    )
     env_cfg.observation_noise_std = repository_config.environment.observation_noise_std
     env = StableMimicG1Env(env_cfg)
     run_dir = args_cli.run_dir or repository_config.output_root / "stablemimic_g1"

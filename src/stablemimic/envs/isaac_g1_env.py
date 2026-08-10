@@ -55,7 +55,11 @@ class StableMimicG1Env(DirectRLEnv):
         if len(torso_ids) != 1:
             raise ValueError(f"expected one torso_link, got {torso_ids}")
         self._torso_body_ids = torso_ids
-        self._motions = load_torch_motion_libraries(cfg.data_root, self.device)
+        self._motions = load_torch_motion_libraries(
+            cfg.data_root,
+            self.device,
+            self._repository_config.recovery_segmentation,
+        )
         # The USD uses instanced collision prims that cannot be disabled through
         # CollisionPropertiesCfg. Keep the FK articulation far above the scene
         # and subtract this deterministic offset at the reward boundary.
@@ -91,6 +95,7 @@ class StableMimicG1Env(DirectRLEnv):
                 "recovery_success",
                 "recovery_failure",
                 "transition_completed",
+                "tracking_fall_entered_recovery",
                 "sequence_termination",
                 "unrecoverable_fall_termination",
                 "timeout",
@@ -420,7 +425,51 @@ class StableMimicG1Env(DirectRLEnv):
         for name in self._episode_sums:
             value = reward if name == "total" else getattr(breakdown, name) * self.step_dt
             self._episode_sums[name] += value
+        entered_recovery = self._tracking_fall_mask()
+        self._latest_events["tracking_fall_entered_recovery"].copy_(entered_recovery)
+        if entered_recovery.any():
+            self._enter_recovery_from_fall(entered_recovery)
         return reward
+
+    def _tracking_fall_mask(self) -> torch.Tensor:
+        if not self.cfg.tracking_fall_recovery_enabled:
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        tracking = self._phase_state.phase == int(MotionPhase.TRACKING)
+        root_height = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+        root_tilt = torch.acos(
+            (-self._robot.data.projected_gravity_b[:, 2]).clamp(-1.0, 1.0)
+        )
+        threshold = math.radians(self.cfg.tracking_fall_tilt_degrees)
+        return tracking & (
+            (root_height < self.cfg.tracking_fall_height_threshold)
+            | (root_tilt > threshold)
+        )
+
+    def _enter_recovery_from_fall(self, mask: torch.Tensor) -> None:
+        """Attach fallen Tracking states to the nearest atomic get-up reference."""
+        env_ids = mask.nonzero(as_tuple=False).squeeze(-1)
+        root_height = (
+            self._robot.data.root_pos_w[env_ids, 2]
+            - self._terrain.env_origins[env_ids, 2]
+        )
+        motion_ids, times = self._motions.recovery.nearest_frame(
+            root_height,
+            self._robot.data.projected_gravity_b[env_ids],
+            self._robot.data.joint_pos[env_ids][:, self._body_joint_ids],
+            joint_weight=self.cfg.recovery_match_joint_weight,
+            height_weight=self.cfg.recovery_match_height_weight,
+            gravity_weight=self.cfg.recovery_match_gravity_weight,
+        )
+        self._recovery_motion_ids[env_ids] = motion_ids
+        self._recovery_times[env_ids] = times
+        sample = self._motions.recovery.sample(motion_ids, times)
+        robot_xy = self._robot.data.root_pos_w[env_ids, :2]
+        env_xy = self._terrain.env_origins[env_ids, :2]
+        self._recovery_xy_offset[env_ids] = robot_xy - env_xy - sample.root_pos[:, :2]
+        self._gate_tracking_override[env_ids] = False
+        self._sequence_done[env_ids] = False
+        self._phase_state.enter_recovery(env_ids)
+        self._write_terminal_recovery_reference(env_ids)
 
     def _kinematic_state(
         self, robot: Articulation, reference_z_offset: float = 0.0
@@ -444,13 +493,20 @@ class StableMimicG1Env(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         tracking = self._phase_state.phase == int(MotionPhase.TRACKING)
-        unrecoverable_fall = tracking & (self._robot.data.root_pos_w[:, 2] < 0.18)
+        recovery = self._phase_state.phase == int(MotionPhase.RECOVERY)
+        root_height = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+        unrecoverable_fall = tracking & (root_height < 0.18)
         early_failure = self._phase_failed | unrecoverable_fall
-        terminated = self._sequence_done | (early_failure & self.cfg.enable_early_termination)
+        # In no-early-termination evaluation, hold a failed Recovery reference
+        # at its terminal instead of silently resetting the pushed robot.
+        sequence_termination = self._sequence_done & ~(
+            recovery & ~self.cfg.enable_early_termination
+        )
+        terminated = sequence_termination | (early_failure & self.cfg.enable_early_termination)
         self._latest_events["recovery_failure"].copy_(
             self._phase_failed & self.cfg.enable_early_termination
         )
-        self._latest_events["sequence_termination"].copy_(self._sequence_done)
+        self._latest_events["sequence_termination"].copy_(sequence_termination)
         self._latest_events["unrecoverable_fall_termination"].copy_(
             unrecoverable_fall & self.cfg.enable_early_termination
         )
