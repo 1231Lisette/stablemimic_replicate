@@ -19,7 +19,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.recovery_segmentation.hold_time_s, 0.5)
         self.assertTrue(config.environment.tracking_fall_recovery_enabled)
         self.assertEqual(config.environment.tracking_fall_height_threshold, 0.5)
-        self.assertEqual(config.training.fall_recovery_warmup_iterations, 300)
+        self.assertEqual(config.training.fall_recovery_warmup_iterations, 5000)
         self.assertEqual(config.training.fall_recovery_ramp_iterations, 100)
 
     def test_fall_recovery_curriculum_warmup_and_ramp(self) -> None:

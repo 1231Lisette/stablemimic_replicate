@@ -109,5 +109,5 @@ training:
   # iteration 1; only uncommanded Tracking-fall switching is delayed/ramped.
   # Do not introduce live Tracking falls until the no-push, static Recovery
   # baseline has had enough joint-training exposure to stand reliably.
-  fall_recovery_warmup_iterations: 300
+  fall_recovery_warmup_iterations: 5000
   fall_recovery_ramp_iterations: 100

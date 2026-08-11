@@ -177,3 +177,7 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   两段分别产生 10,377/10,695 次 live fall entry，Tracking 样本占比降至约 25.4%。因此动态
   跌倒课程再次稀释标准起身学习；到 1000 前应先决定延后 live-fall curriculum，不能只看
   `1/256` 自动续训。
+- 用户确认继续以一个完整联合 checkpoint 训练，而不是拆分并拼接独立 Expert。为优先建立
+  标准起身能力，fall-switch warmup 从 300 延长到 5000；iteration 501--1000 恢复为严格
+  50/50 Tracking/Recovery reset 的联合训练，不施加外力。iteration 500 checkpoint 保留两个
+  Expert、Gate、Critic 和 normalizer，可在相同 training semantics version 4 下继续训练。
