@@ -120,6 +120,44 @@ class TorchMotionLibrary:
     def random_times(self, motion_ids: torch.Tensor, generator: torch.Generator | None = None) -> torch.Tensor:
         return torch.rand(motion_ids.shape, device=self.device, generator=generator) * self.durations[motion_ids]
 
+    def sample_representative_fallen_states(
+        self,
+        count: int,
+        *,
+        height_threshold: float = 0.5,
+        tilt_threshold_degrees: float = 60.0,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample the lowest clearly tilted frame from each eligible motion.
+
+        Atomic clips begin when the fall criterion first persists, which can be
+        a low crouch or a still-falling frame. This evaluation helper instead
+        finds a reproducible, physically fallen state inside each clip.
+        """
+        tilt_threshold = torch.deg2rad(torch.tensor(
+            tilt_threshold_degrees, device=self.device
+        ))
+        candidates_ids = []
+        candidates_times = []
+        for motion_id in range(self.num_motions):
+            gravity = projected_gravity_from_xyzw(self.root_quat[motion_id])
+            tilt = torch.acos((-gravity[:, 2]).clamp(-1.0, 1.0))
+            eligible = (tilt >= tilt_threshold) & (
+                self.root_pos[motion_id][:, 2] <= height_threshold
+            )
+            frame_ids = torch.nonzero(eligible, as_tuple=False).flatten()
+            if frame_ids.numel() == 0:
+                continue
+            local = self.root_pos[motion_id][frame_ids, 2].argmin()
+            frame_id = frame_ids[local]
+            candidates_ids.append(motion_id)
+            candidates_times.append(frame_id / self.fps[motion_id])
+        if not candidates_ids:
+            raise ValueError("recovery library contains no clearly fallen states")
+        bank_ids = torch.tensor(candidates_ids, dtype=torch.long, device=self.device)
+        bank_times = torch.stack(candidates_times)
+        choices = torch.randint(bank_ids.numel(), (count,), device=self.device)
+        return bank_ids[choices], bank_times[choices]
+
     def sample(self, motion_ids: torch.Tensor, times: torch.Tensor) -> TorchMotionSample:
         if motion_ids.shape != times.shape or motion_ids.ndim != 1:
             raise ValueError("motion_ids and times must be matching rank-one tensors")

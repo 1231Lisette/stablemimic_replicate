@@ -9,6 +9,8 @@ class ConfigTests(unittest.TestCase):
         path = Path(__file__).parents[1] / "configs" / "stablemimic_g1.yaml"
         config = load_config(path)
         self.assertAlmostEqual(config.environment.physics_dt * config.environment.decimation, 0.02)
+        self.assertAlmostEqual(config.environment.recovery_static_reset_probability, 0.25)
+        self.assertTrue(config.recovery_segmentation.trim_to_tilted_nadir)
         self.assertEqual(config.environment.action_clip, 100.0)
         self.assertEqual(config.model.expert_hidden_dims, (512, 256, 128))
         self.assertEqual(config.model.initial_std, 0.2)

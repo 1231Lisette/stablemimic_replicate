@@ -128,6 +128,31 @@ class StableMimicTorchTests(unittest.TestCase):
             sampled.joint_pos[:, 0], torch.tensor([0.0, 0.0, 1.0, 1.0])
         ))
 
+    def test_representative_fallen_state_excludes_ineligible_motion(self) -> None:
+        import numpy as np
+        from stablemimic.motion.lafan1 import LAFAN1_G1_JOINT_NAMES
+        from stablemimic.motion.reference import MotionReference
+        from stablemimic.motion.torch_library import TorchMotionLibrary
+
+        upright = np.array([[0.0, 0.0, 0.0, 1.0]] * 3)
+        prone = np.array([[0.0, np.sin(np.pi / 4), 0.0, np.cos(np.pi / 4)]] * 3)
+        motions = (
+            MotionReference(
+                "upright", 10.0, LAFAN1_G1_JOINT_NAMES,
+                np.array([[0.0, 0.0, 0.8], [0.0, 0.0, 0.4], [0.0, 0.0, 0.8]]),
+                upright, np.zeros((3, 29)),
+            ),
+            MotionReference(
+                "fallen", 10.0, LAFAN1_G1_JOINT_NAMES,
+                np.array([[0.0, 0.0, 0.3], [0.0, 0.0, 0.1], [0.0, 0.0, 0.2]]),
+                prone, np.zeros((3, 29)),
+            ),
+        )
+        library = TorchMotionLibrary(motions, "cpu")
+        ids, times = library.sample_representative_fallen_states(8)
+        self.assertEqual(ids.tolist(), [1] * 8)
+        self.assertTrue(torch.allclose(times, torch.full((8,), 0.1)))
+
     def test_phase_separates_active_failure_from_terminal_success(self) -> None:
         from stablemimic.core.phases import MotionPhase, PhaseState
 

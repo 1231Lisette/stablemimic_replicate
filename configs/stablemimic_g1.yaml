@@ -28,6 +28,9 @@ environment:
   recovery_match_joint_weight: 1.0
   recovery_match_height_weight: 4.0
   recovery_match_gravity_weight: 2.0
+  # Ensure Recovery learns to initiate motion from rest, rather than relying
+  # only on velocity inherited from a moving reference frame.
+  recovery_static_reset_probability: 0.25
   observation_noise_std: 0.0       # reproduction choice; disabled baseline
 
 # The public files contain repeated falls/get-ups. Treating each 102--168 s
@@ -40,6 +43,9 @@ recovery_segmentation:
   upright_tilt_degrees: 30.0
   hold_time_s: 0.5
   maximum_clip_duration_s: 20.0
+  # The fall detector fires before ground contact. Keep only the actual
+  # tilted-nadir-to-upright portion as the Recovery reference.
+  trim_to_tilted_nadir: true
 
 reset_noise:
   root_xy: [-0.05, 0.05]

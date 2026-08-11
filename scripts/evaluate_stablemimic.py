@@ -20,6 +20,15 @@ parser.add_argument("--steps", type=int, default=1000)
 parser.add_argument("--output", required=True)
 parser.add_argument("--matched-pushes", action="store_true")
 parser.add_argument(
+    "--standard-recovery", action="store_true",
+    help=("Evaluate one no-push trial per environment from a representative fallen "
+          "state in an atomic Recovery clip, with zero reset velocity and no reset noise."),
+)
+parser.add_argument(
+    "--reference-reset-velocity", action="store_true",
+    help="With --standard-recovery, retain the source motion velocity as a diagnostic control.",
+)
+parser.add_argument(
     "--enable-early-termination", action="store_true",
     help="Use training-time fall/failure resets (paper evaluation leaves them disabled).",
 )
@@ -40,12 +49,16 @@ import torch
 
 from stablemimic.envs.isaac_g1_env import StableMimicG1Env
 from stablemimic.envs.isaac_g1_env_cfg import StableMimicG1EnvCfg
-from stablemimic.eval import matched_push_protocol
+from stablemimic.eval import classify_fallen_orientation, matched_push_protocol
 from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCritic
 from stablemimic.sim import close_simulation_app
 
 
 def main() -> None:
+    if args_cli.standard_recovery and args_cli.matched_pushes:
+        parser.error("--standard-recovery and --matched-pushes are mutually exclusive")
+    if args_cli.reference_reset_velocity and not args_cli.standard_recovery:
+        parser.error("--reference-reset-velocity requires --standard-recovery")
     env_cfg = StableMimicG1EnvCfg()
     env_cfg.stablemimic_config_path = str(Path(args_cli.config).resolve())
     env_cfg.data_root = str(config.data_root)
@@ -55,7 +68,7 @@ def main() -> None:
     env_cfg.decimation = config.environment.decimation
     env_cfg.action_scale = config.environment.action_scale
     env_cfg.action_clip = config.environment.action_clip
-    env_cfg.tracking_reset_probability = (
+    env_cfg.tracking_reset_probability = 0.0 if args_cli.standard_recovery else (
         1.0 if args_cli.matched_pushes else config.environment.tracking_reset_probability
     )
     env_cfg.transition_duration_s = config.environment.transition_duration_s
@@ -76,6 +89,11 @@ def main() -> None:
     env_cfg.fall_recovery_probability = 1.0
     env_cfg.observation_noise_std = 0.0
     env_cfg.enable_early_termination = args_cli.enable_early_termination
+    env_cfg.recovery_reset_at_fallen_state = args_cli.standard_recovery
+    env_cfg.recovery_reset_zero_velocity = (
+        args_cli.standard_recovery and not args_cli.reference_reset_velocity
+    )
+    env_cfg.reset_noise_enabled = not args_cli.standard_recovery
     env = StableMimicG1Env(env_cfg)
     if args_cli.matched_pushes and env.num_envs < 100:
         raise ValueError("--matched-pushes requires --num-envs >= 100")
@@ -90,6 +108,23 @@ def main() -> None:
     agent.load_state_dict(payload["agent"])
     agent.eval()
     observation, _ = env.reset()
+    standard_recovery_labels = None
+    standard_terminal_success = None
+    standard_physical_success = None
+    standard_upright_hold_steps = None
+    if args_cli.standard_recovery:
+        standard_recovery_labels = classify_fallen_orientation(
+            env.recovery_evaluation_state()["projected_gravity"].clone()
+        )
+        standard_terminal_success = torch.zeros(
+            env.num_envs, dtype=torch.bool, device=env.device
+        )
+        standard_physical_success = torch.zeros(
+            env.num_envs, dtype=torch.bool, device=env.device
+        )
+        standard_upright_hold_steps = torch.zeros(
+            env.num_envs, dtype=torch.long, device=env.device
+        )
     total_reward = torch.zeros(env.num_envs, device=env.device)
     terminations = torch.zeros(env.num_envs, device=env.device)
     gate_sum = torch.zeros(env.num_envs, 2, device=env.device)
@@ -141,7 +176,28 @@ def main() -> None:
         with torch.no_grad():
             action, _, _, policy = agent.actor.act(actor, gate, deterministic=True)
         observation, reward, terminated, truncated, _ = env.step(action)
+        if standard_terminal_success is not None:
+            standard_terminal_success |= env.latest_events["recovery_success"]
         recovery_state = env.recovery_evaluation_state()
+        if standard_physical_success is not None and standard_upright_hold_steps is not None:
+            physically_upright = (
+                (recovery_state["root_height"] >= config.recovery_segmentation.upright_height_threshold)
+                & (
+                    recovery_state["root_tilt_radians"]
+                    <= torch.deg2rad(torch.tensor(
+                        config.recovery_segmentation.upright_tilt_degrees,
+                        device=env.device,
+                    ))
+                )
+            )
+            standard_upright_hold_steps = torch.where(
+                physically_upright,
+                standard_upright_hold_steps + 1,
+                torch.zeros_like(standard_upright_hold_steps),
+            )
+            standard_physical_success |= standard_upright_hold_steps >= int(round(
+                config.recovery_segmentation.hold_time_s / env.step_dt
+            ))
         fallen_now = (
             (recovery_state["root_height"] < 0.5)
             | (recovery_state["root_tilt_radians"] > fall_tilt_radians)
@@ -239,6 +295,41 @@ def main() -> None:
         "push_force_range_newtons": [525.0, 575.0] if args_cli.matched_pushes else None,
         "push_duration_seconds": 0.2 if args_cli.matched_pushes else None,
     }
+    if (
+        standard_recovery_labels is not None
+        and standard_terminal_success is not None
+        and standard_physical_success is not None
+    ):
+        label_names = ("supine", "prone", "left_side", "right_side", "other")
+        by_orientation = {}
+        for label_id, label_name in enumerate(label_names):
+            mask = standard_recovery_labels == label_id
+            trials = int(mask.sum())
+            successes = int((standard_physical_success & mask).sum())
+            terminal_successes = int((standard_terminal_success & mask).sum())
+            by_orientation[label_name] = {
+                "trials": trials,
+                "physical_successes": successes,
+                "physical_success_rate": successes / trials if trials else None,
+                "terminal_reference_successes": terminal_successes,
+                "terminal_reference_success_rate": terminal_successes / trials if trials else None,
+            }
+        metrics["standard_recovery"] = {
+            "definition": (
+                "lowest root-height frame satisfying height<=0.5m and tilt>=60deg in "
+                "each eligible atomic clip; reset noise disabled, no push; "
+                + ("source motion velocity" if args_cli.reference_reset_velocity else "zero velocity")
+            ),
+            "trials": env.num_envs,
+            "physical_success_definition": (
+                "root height>=0.7m and root tilt<=30deg sustained for 0.5s"
+            ),
+            "physical_successes": int(standard_physical_success.sum()),
+            "physical_success_rate": float(standard_physical_success.float().mean()),
+            "terminal_reference_successes": int(standard_terminal_success.sum()),
+            "terminal_reference_success_rate": float(standard_terminal_success.float().mean()),
+            "by_initial_orientation": by_orientation,
+        }
     output = Path(args_cli.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")

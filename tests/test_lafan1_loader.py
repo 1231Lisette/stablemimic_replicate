@@ -34,6 +34,10 @@ class LAFAN1LoaderTests(unittest.TestCase):
         root_pos[65:85, 2] = 0.3
         quaternions = np.zeros((frames, 4), dtype=np.float64)
         quaternions[:, 3] = 1.0
+        quaternions[10:36, 1] = np.sin(np.pi / 4)
+        quaternions[10:36, 3] = np.cos(np.pi / 4)
+        quaternions[65:85, 1] = np.sin(np.pi / 4)
+        quaternions[65:85, 3] = np.cos(np.pi / 4)
         joints = np.zeros((frames, len(LAFAN1_G1_JOINT_NAMES)), dtype=np.float64)
         joints[:, 0] = np.arange(frames)
         motion = MotionReference(
@@ -103,7 +107,7 @@ class LAFAN1LoaderTests(unittest.TestCase):
         recovery_clips = load_segmented_recovery_motions(
             libraries.recovery, RecoverySegmentationCfg()
         )
-        self.assertEqual(len(recovery_clips), 86)
+        self.assertEqual(len(recovery_clips), 80)
         self.assertLessEqual(max(motion.duration for motion in recovery_clips), 20.0)
 
 

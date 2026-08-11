@@ -87,6 +87,9 @@ def main() -> None:
     env_cfg.recovery_match_gravity_weight = (
         repository_config.environment.recovery_match_gravity_weight
     )
+    env_cfg.recovery_static_reset_probability = (
+        repository_config.environment.recovery_static_reset_probability
+    )
     env_cfg.observation_noise_std = repository_config.environment.observation_noise_std
     env = StableMimicG1Env(env_cfg)
     run_dir = args_cli.run_dir or repository_config.output_root / "stablemimic_g1"

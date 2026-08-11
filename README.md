@@ -295,10 +295,11 @@ Actor 按论文描述使用共享标量方差的高斯动作。`environment.acti
 
 Checkpoint 包含 Actor、Gate、Critic、三个 normalizer、optimizer、iteration 和配置快照。
 
-注意：原子 recovery 切片改变了 motion id、failure histogram 尺寸、terminal target 与
+注意：v4 Recovery 切片从每个周期内满足倒地判据的最低点开始，并以 25% 概率从该状态
+近零速度 reset；当前库为 80 条。该变化改变了 motion id、failure histogram 尺寸、terminal target 与
 phase 语义。`joint_ab_std_020`、`joint_paper_aligned_v1`、`joint_terminal_entropy_v1`
-与 `joint_atomic_recovery_v1` 全部只保留作诊断证据，严禁续训。新实验必须从随机初始化
-建立新目录，例如 `joint_atomic_warmup_v1`。只有同一 commit、同一配置和同一 curriculum
+、`joint_atomic_recovery_v1` 与 `joint_atomic_warmup_v1` 全部只保留作诊断证据，严禁续训。
+新实验必须从随机初始化建立新目录，例如 `joint_static_recovery_v4`。只有同一 commit、同一配置和同一 curriculum
 语义的 checkpoint 才可续训。
 runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错，避免误续训。
 
@@ -315,6 +316,23 @@ runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错�
   --output /root/gpufree-data/stablemimic_replicate/runs/joint_v1/eval.json \
   --headless
 ```
+
+无外力标准起身评估会从每条合格 Recovery 轨迹中“倾角至少 60°且高度不超过 0.5m”的
+最低帧启动，清零初速度和 reset 噪声，并分别统计仰卧、俯卧、左右侧卧的物理起身率：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/evaluate_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/latest.pt \
+  --num-envs 256 \
+  --steps 1000 \
+  --standard-recovery \
+  --output /root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/standard_recovery.json \
+  --headless
+```
+
+物理成功定义为高度至少 0.7m、倾角不超过 30°并持续 0.5 秒，不要求关节姿态恰好等于
+示范末帧。`--reference-reset-velocity` 只用于诊断示范动量依赖，不是标准协议。
 
 论文形式的 matched pushes：100 个并行环境，`±x/±y` 每方向 25 次，
 525–575 N、持续 0.2 秒：

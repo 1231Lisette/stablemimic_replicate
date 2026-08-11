@@ -147,6 +147,7 @@ class StableMimicG1Env(DirectRLEnv):
         return {
             "root_height": self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2],
             "root_tilt_radians": root_tilt,
+            "projected_gravity": projected_gravity,
             "command_height": self._tracking_sample.root_pos[:, 2],
             "similarity": self._latest_similarity,
             "terminal_similarity": self._latest_terminal_similarity,
@@ -560,10 +561,24 @@ class StableMimicG1Env(DirectRLEnv):
         self._tracking_times[env_ids] = self._motions.tracking.random_times(
             self._tracking_motion_ids[env_ids]
         )
+        recovery_reset = torch.rand(count, device=self.device) >= self.cfg.tracking_reset_probability
         recovery_ids, recovery_times = self._recovery_sampler.sample(count)
+        static_recovery_reset = recovery_reset & (
+            torch.rand(count, device=self.device) < self.cfg.recovery_static_reset_probability
+        )
+        if self.cfg.recovery_reset_at_fallen_state:
+            static_recovery_reset = recovery_reset.clone()
+        static_count = int(static_recovery_reset.sum())
+        if static_count:
+            static_ids, static_times = self._motions.recovery.sample_representative_fallen_states(
+                static_count,
+                height_threshold=self.cfg.tracking_fall_height_threshold,
+                tilt_threshold_degrees=self.cfg.tracking_fall_tilt_degrees,
+            )
+            recovery_ids[static_recovery_reset] = static_ids
+            recovery_times[static_recovery_reset] = static_times
         self._recovery_motion_ids[env_ids] = recovery_ids
         self._recovery_times[env_ids] = recovery_times
-        recovery_reset = torch.rand(count, device=self.device) >= self.cfg.tracking_reset_probability
         self._phase_state.reset(env_ids, recovery_reset)
         tracking_sample = self._motions.tracking.sample(
             self._tracking_motion_ids[env_ids], self._tracking_times[env_ids]
@@ -599,6 +614,10 @@ class StableMimicG1Env(DirectRLEnv):
         )
         root_pose = torch.cat((root_position, root_quaternion), dim=-1)
         root_velocity = torch.cat((reset_sample.root_lin_vel_world, reset_sample.root_ang_vel_world), dim=-1)
+        zero_velocity_reset = static_recovery_reset | (
+            recovery_reset & self.cfg.recovery_reset_zero_velocity
+        )
+        root_velocity[zero_velocity_reset] = 0.0
         root_velocity[:, :2] += self._uniform_noise("linear_velocity_xy", (count, 2))
         root_velocity[:, 2:3] += self._uniform_noise("linear_velocity_z", (count, 1))
         root_velocity[:, 3:5] += self._uniform_noise("angular_velocity_roll_pitch", (count, 2))
@@ -609,6 +628,7 @@ class StableMimicG1Env(DirectRLEnv):
             "joint_position", (count, 29)
         )
         joint_velocity[:, self._body_joint_ids] = reset_sample.joint_vel
+        joint_velocity[zero_velocity_reset] = 0.0
         self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(root_velocity, env_ids)
         self._robot.write_joint_state_to_sim(joint_position, joint_velocity, None, env_ids)
@@ -619,8 +639,11 @@ class StableMimicG1Env(DirectRLEnv):
             log[f"Episode_Reward/{name}"] = values[env_ids].mean() / self.max_episode_length_s
             values[env_ids] = 0.0
         log["Episode_Phase/recovery_reset_fraction"] = recovery_reset.float().mean()
+        log["Episode_Phase/static_recovery_reset_fraction"] = static_recovery_reset.float().mean()
         self.extras["log"] = log
 
     def _uniform_noise(self, name: str, shape: tuple[int, ...]) -> torch.Tensor:
+        if not self.cfg.reset_noise_enabled:
+            return torch.zeros(shape, device=self.device)
         lower, upper = self._repository_config.reset_noise[name]
         return torch.empty(shape, device=self.device).uniform_(lower, upper)

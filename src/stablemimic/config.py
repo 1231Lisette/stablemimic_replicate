@@ -52,6 +52,7 @@ class EnvironmentCfg:
     recovery_match_joint_weight: float = 1.0
     recovery_match_height_weight: float = 4.0
     recovery_match_gravity_weight: float = 2.0
+    recovery_static_reset_probability: float = 0.25
     observation_noise_std: float = 0.0
 
 
@@ -64,6 +65,7 @@ class RecoverySegmentationCfg:
     upright_tilt_degrees: float = 30.0
     hold_time_s: float = 0.5
     maximum_clip_duration_s: float = 20.0
+    trim_to_tilted_nadir: bool = True
 
 
 @dataclass(frozen=True)
@@ -169,6 +171,8 @@ def load_config(path: str | Path) -> StableMimicCfg:
         env.recovery_match_gravity_weight,
     ) < 0.0:
         raise ValueError("recovery matching weights must be non-negative")
+    if not 0.0 <= env.recovery_static_reset_probability <= 1.0:
+        raise ValueError("recovery_static_reset_probability must be in [0, 1]")
     segmentation = RecoverySegmentationCfg(**raw.get("recovery_segmentation", {}))
     if segmentation.fallen_height_threshold <= 0.0:
         raise ValueError("recovery_segmentation.fallen_height_threshold must be positive")

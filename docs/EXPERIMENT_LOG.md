@@ -133,3 +133,22 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   因此“完全没训练够”不足以解释失败：更多训练改善了局部回报，却没有跨越完整起身的行为门槛。
   训练内 success 主要来自 motion-reset/自然失稳支持范围，不能当作强推恢复成功。停止不变配置
   下的自动续训，下一步需检查公开 recovery library 的姿态/接触/速度覆盖与课程样本分配。
+
+## 静止倒地基线与 version-4 修正（2026-08-11）
+
+- 新增无外力 `--standard-recovery` 协议。iteration-300 v3 在真实倒地点、零初速度、无 reset
+  噪声的 256 次试验中，按“高度 ≥0.7m、倾角 ≤30°持续 0.5 秒”的纯物理标准为 `0/256`：
+  仰卧 `0/127`、俯卧 `0/71`、左侧卧 `0/27`、右侧卧 `0/31`。terminal-reference success
+  同样为 `0/256`。保留示范速度的同样对照仍为 `0/256`，排除单纯清零速度导致失败。
+- 进一步审计发现旧 86 条原子 clip 的起点仍是 fall detector 第一次持续触发的位置；其中
+  65/86 起点的躯干主轴仍接近直立，真正的最低倒地状态通常在片段约 30% 处。因此旧 clip
+  前段仍在描述“继续倒下”，不是纯 Recovery。
+- v4 把每个周期裁到“高度 <0.5m、倾角 >60°的最低帧→持续直立终点”，排除没有明确躺姿
+  的周期。现有 6 个文件得到 80 条轨迹，时长 `1.33--13.33 s`、中位数 `3.28 s`；未扩充数据。
+- v4 joint training 保持 50/50 Tracking/Recovery reset，并让 25% 的 Recovery reset 从上述
+  倒地最低点、近零速度开始，其余仍使用 uniform/failure-adaptive frame sampling。没有加入外力。
+- 真实数据/PyTorch 完整测试 `30/30`、compileall 和 whitespace 检查通过。1024-env、1-iteration
+  CUDA smoke 完成有限 PPO update：step reward `0.04587`、std `0.20095`、KL `0.19796`、动作
+  裁剪为零、无 CUDA/PhysX/非有限错误。该 KL 只代表随机首轮 smoke，不代表收敛。
+- checkpoint 语义版本升至 4，failure histogram 预期为 `80×64`；所有 v3 checkpoint 只能用于
+  对照评估，不能续训。下一步从随机初始化运行 v4 的有界训练，并优先用无外力标准起身率决策。

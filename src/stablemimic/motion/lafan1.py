@@ -143,10 +143,23 @@ def segment_recovery_motion(
         if upright_start is None:
             break
         end = upright_start + hold_frames - 1
-        duration = (end - fall_start) / motion.fps
+        recovery_start = fall_start
+        if config.trim_to_tilted_nadir:
+            candidate_mask = (
+                (motion.root_pos[fall_start:upright_start, 2] < config.fallen_height_threshold)
+                & (tilt[fall_start:upright_start] > config.fallen_tilt_degrees)
+            )
+            candidates = np.flatnonzero(candidate_mask) + fall_start
+            if candidates.size == 0:
+                cursor = end + 1
+                continue
+            recovery_start = int(candidates[
+                np.argmin(motion.root_pos[candidates, 2])
+            ])
+        duration = (end - recovery_start) / motion.fps
         if duration <= config.maximum_clip_duration_s:
             clip_index = len(clips)
-            frame_slice = slice(fall_start, end + 1)
+            frame_slice = slice(recovery_start, end + 1)
             clips.append(MotionReference(
                 name=f"{motion.name}__recovery_{clip_index:03d}",
                 fps=motion.fps,
