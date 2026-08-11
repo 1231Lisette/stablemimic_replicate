@@ -115,3 +115,21 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   0 recovery success、0 transition、0 tracking resumption、0 termination。说明 curriculum 的
   路由修复有效，但 iteration 100 的策略尚未学会外力推倒后的恢复；按预定决策门停止，不把
   “训练数值健康”误写成“恢复能力已经获得”。
+
+## version-3 iteration-200/300 训练量测试（2026-08-11）
+
+- iteration 101--200 的 fall-switch probability 从 `0.01` ramp 到 `1.0`，累计 35,128 个
+  candidates、8,323 个 live fall entries、360 个训练内 Recovery successes 和 286 个
+  transitions。last-20 Tracking/Recovery exposure 为 `22.60%/76.63%`，说明一次 fall entry
+  带来的持续 Recovery 占用使样本比例远比入口概率更偏斜。
+- iteration-200 matched push 的 reward 从 iteration 100 的 `2.9599` 提高到 `3.4507`，平均
+  Recovery Gate weight 从 `0.7810` 提高到 `0.8370`，但仍为 100/100 fall、100/100 entry、
+  0 success/transition/resumption。
+- 按用户要求，不修改配置继续 iteration 201--300。该段新增 9,043 个 live fall entries、
+  324 个训练内 successes 和 249 个 transitions；last-20 KL `0.01307`、std `0.21275`，数值
+  仍健康，但 Tracking exposure 只有 `24.60%`。
+- iteration-300 matched push reward 继续提高到 `4.0274`，但仍为 100/100 fall、100/100
+  entry、0 success/transition/resumption；mixed 评估也为 0 success/transition/resumption。
+  因此“完全没训练够”不足以解释失败：更多训练改善了局部回报，却没有跨越完整起身的行为门槛。
+  训练内 success 主要来自 motion-reset/自然失稳支持范围，不能当作强推恢复成功。停止不变配置
+  下的自动续训，下一步需检查公开 recovery library 的姿态/接触/速度覆盖与课程样本分配。
