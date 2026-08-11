@@ -152,3 +152,11 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   裁剪为零、无 CUDA/PhysX/非有限错误。该 KL 只代表随机首轮 smoke，不代表收敛。
 - checkpoint 语义版本升至 4，failure histogram 预期为 `80×64`；所有 v3 checkpoint 只能用于
   对照评估，不能续训。下一步从随机初始化运行 v4 的有界训练，并优先用无外力标准起身率决策。
+- `joint_static_recovery_v4` 从随机初始化完成 iteration 1--100。100 条 metrics 全部有限，最终
+  std `0.20512`、KL `0.01788`、动作裁剪为零；累计 411 次训练内 Recovery success 和 333 次
+  Transition。标准静止起身的 terminal-reference match 从 v3 的 `0/256` 提升到 `2/256`，但
+  两次均未达到持续 0.5 秒的物理直立，故物理成功仍为 `0/256`。Gate 平均 Recovery 权重
+  `0.944`，表明主要瓶颈仍是动作能力而非路由。
+- 为避免 iteration 101 立即引入 live Tracking-fall 分布、再次稀释静止起身学习，warmup 从
+  100 延长到 300。iteration 1--100 在新旧配置下 fall-switch probability 都严格为 0，因此
+  iteration-100 v4 checkpoint 可无语义断点续训；下一决策点为 iteration 200 的同协议复测。

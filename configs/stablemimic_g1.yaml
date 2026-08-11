@@ -107,5 +107,7 @@ training:
   log_interval: 10
   # Joint-training reproduction curriculum: Recovery resets stay active from
   # iteration 1; only uncommanded Tracking-fall switching is delayed/ramped.
-  fall_recovery_warmup_iterations: 100
+  # Do not introduce live Tracking falls until the no-push, static Recovery
+  # baseline has had enough joint-training exposure to stand reliably.
+  fall_recovery_warmup_iterations: 300
   fall_recovery_ramp_iterations: 100
