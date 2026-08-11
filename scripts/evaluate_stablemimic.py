@@ -112,6 +112,9 @@ def main() -> None:
     standard_terminal_success = None
     standard_physical_success = None
     standard_upright_hold_steps = None
+    standard_max_upright_hold_steps = None
+    standard_max_height = None
+    standard_min_tilt = None
     if args_cli.standard_recovery:
         standard_recovery_labels = classify_fallen_orientation(
             env.recovery_evaluation_state()["projected_gravity"].clone()
@@ -125,6 +128,10 @@ def main() -> None:
         standard_upright_hold_steps = torch.zeros(
             env.num_envs, dtype=torch.long, device=env.device
         )
+        standard_max_upright_hold_steps = torch.zeros_like(standard_upright_hold_steps)
+        initial_state = env.recovery_evaluation_state()
+        standard_max_height = initial_state["root_height"].clone()
+        standard_min_tilt = initial_state["root_tilt_radians"].clone()
     total_reward = torch.zeros(env.num_envs, device=env.device)
     terminations = torch.zeros(env.num_envs, device=env.device)
     gate_sum = torch.zeros(env.num_envs, 2, device=env.device)
@@ -194,6 +201,15 @@ def main() -> None:
                 physically_upright,
                 standard_upright_hold_steps + 1,
                 torch.zeros_like(standard_upright_hold_steps),
+            )
+            standard_max_upright_hold_steps = torch.maximum(
+                standard_max_upright_hold_steps, standard_upright_hold_steps
+            )
+            standard_max_height = torch.maximum(
+                standard_max_height, recovery_state["root_height"]
+            )
+            standard_min_tilt = torch.minimum(
+                standard_min_tilt, recovery_state["root_tilt_radians"]
             )
             standard_physical_success |= standard_upright_hold_steps >= int(round(
                 config.recovery_segmentation.hold_time_s / env.step_dt
@@ -299,6 +315,9 @@ def main() -> None:
         standard_recovery_labels is not None
         and standard_terminal_success is not None
         and standard_physical_success is not None
+        and standard_max_upright_hold_steps is not None
+        and standard_max_height is not None
+        and standard_min_tilt is not None
     ):
         label_names = ("supine", "prone", "left_side", "right_side", "other")
         by_orientation = {}
@@ -307,13 +326,26 @@ def main() -> None:
             trials = int(mask.sum())
             successes = int((standard_physical_success & mask).sum())
             terminal_successes = int((standard_terminal_success & mask).sum())
+            reached_height = int((mask & (
+                standard_max_height >= config.recovery_segmentation.upright_height_threshold
+            )).sum())
+            reached_tilt = int((mask & (
+                standard_min_tilt <= torch.deg2rad(torch.tensor(
+                    config.recovery_segmentation.upright_tilt_degrees, device=env.device
+                ))
+            )).sum())
+            transient_upright = int((mask & (standard_max_upright_hold_steps > 0)).sum())
             by_orientation[label_name] = {
                 "trials": trials,
                 "physical_successes": successes,
                 "physical_success_rate": successes / trials if trials else None,
                 "terminal_reference_successes": terminal_successes,
                 "terminal_reference_success_rate": terminal_successes / trials if trials else None,
+                "reached_upright_height": reached_height,
+                "reached_upright_tilt": reached_tilt,
+                "transiently_upright": transient_upright,
             }
+        hold_seconds = standard_max_upright_hold_steps.float() * env.step_dt
         metrics["standard_recovery"] = {
             "definition": (
                 "lowest root-height frame satisfying height<=0.5m and tilt>=60deg in "
@@ -328,6 +360,23 @@ def main() -> None:
             "physical_success_rate": float(standard_physical_success.float().mean()),
             "terminal_reference_successes": int(standard_terminal_success.sum()),
             "terminal_reference_success_rate": float(standard_terminal_success.float().mean()),
+            "reached_upright_height": int((
+                standard_max_height >= config.recovery_segmentation.upright_height_threshold
+            ).sum()),
+            "reached_upright_tilt": int((
+                standard_min_tilt <= torch.deg2rad(torch.tensor(
+                    config.recovery_segmentation.upright_tilt_degrees, device=env.device
+                ))
+            ).sum()),
+            "transiently_upright": int((standard_max_upright_hold_steps > 0).sum()),
+            "median_max_root_height": float(standard_max_height.median()),
+            "p90_max_root_height": float(torch.quantile(standard_max_height, 0.9)),
+            "median_min_root_tilt_degrees": float(torch.rad2deg(standard_min_tilt).median()),
+            "p10_min_root_tilt_degrees": float(torch.quantile(
+                torch.rad2deg(standard_min_tilt), 0.1
+            )),
+            "median_max_upright_hold_seconds": float(hold_seconds.median()),
+            "p90_max_upright_hold_seconds": float(torch.quantile(hold_seconds, 0.9)),
             "by_initial_orientation": by_orientation,
         }
     output = Path(args_cli.output).expanduser().resolve()

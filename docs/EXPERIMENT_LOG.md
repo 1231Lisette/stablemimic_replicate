@@ -160,3 +160,11 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
 - 为避免 iteration 101 立即引入 live Tracking-fall 分布、再次稀释静止起身学习，warmup 从
   100 延长到 300。iteration 1--100 在新旧配置下 fall-switch probability 都严格为 0，因此
   iteration-100 v4 checkpoint 可无语义断点续训；下一决策点为 iteration 200 的同协议复测。
+- iteration 101--200 在 fall-switch probability 始终为 0 的条件下继续联合训练，新增 435 次
+  训练内 success 和 330 次 Transition；最终 std `0.20503`、KL `0.01328`，但标准静止起身
+  仍为物理成功 `0/256`，terminal match 为 `1/256`，低于 iteration 100 的 `2/256`。停止盲目续训。
+- 失败阶段诊断显示 256 次中只有 5 次曾达到 0.7m 高度、3 次曾达到 30°以内倾角，且只有
+  俯卧组出现过瞬时同时满足；没有一次维持到 0.5 秒。最大高度中位数仅 `0.351m`、p90
+  `0.588m`，最小倾角中位数仍为 `60.34°`。仰卧和左右侧卧均为 0 次抬高/扶正，说明主要
+  失败发生在最前面的离地与翻身阶段，不是最后站稳阶段，也不能再用训练内 terminal event
+  代表真实起身能力。
