@@ -181,3 +181,11 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
   标准起身能力，fall-switch warmup 从 300 延长到 5000；iteration 501--1000 恢复为严格
   50/50 Tracking/Recovery reset 的联合训练，不施加外力。iteration 500 checkpoint 保留两个
   Expert、Gate、Critic 和 normalizer，可在相同 training semantics version 4 下继续训练。
+- iteration 501--1000 已完成，fall-switch probability 和 live fall entry 全程严格为 0。所有
+  metrics 有限，最终 std `0.21376`、KL `0.01305`、action clip 为零；最后 20 轮 Recovery
+  reward 均值从 501--600 段的 `0.02571` 缓慢升至 901--1000 段的 `0.02714`。
+- 同协议 iteration-1000 标准静止评估却从 iteration 500 的 `1/256` 回落到 `0/256`；达到
+  0.7m 的 trial 从 9 降到 4，扶正从 4 降到 2，瞬时同时满足从 3 降到 2，最大高度中位数
+  从 `0.350m` 降到 `0.341m`。仰卧和右侧卧仍完全无进展；俯卧有 3 次抬高/1 次瞬时扶正，
+  左侧卧各 1 次。训练内 success 在五个百轮段依次为 217/168/160/151/160，未转化为静止
+  起身能力。停止自动续到 2000，下一步需诊断训练内 success/reset 类型与标准测试脱节。
