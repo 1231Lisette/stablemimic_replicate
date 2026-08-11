@@ -334,6 +334,28 @@ runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错�
 物理成功定义为高度至少 0.7m、倾角不超过 30°并持续 0.5 秒，不要求关节姿态恰好等于
 示范末帧。`--reference-reset-velocity` 只用于诊断示范动量依赖，不是标准协议。
 
+若要判断训练内 success 是否只来自接近站立的参考帧，可分别从 Recovery 轨迹的前、中、后
+三分之一随机 reset；该诊断保留训练时的 reset 噪声和参考速度，但不施加外力：
+
+```bash
+for PHASE in early middle late; do
+  /workspace/isaaclab/isaaclab.sh -p scripts/evaluate_stablemimic.py \
+    --config configs/stablemimic_g1.yaml \
+    --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/latest.pt \
+    --num-envs 256 \
+    --steps 1000 \
+    --recovery-phase-bin "${PHASE}" \
+    --output "/root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/recovery_${PHASE}.json" \
+    --headless
+done
+```
+
+训练日志还会把新产生的 Recovery success 按 reset 来源精确拆成
+`recovery_success_static_count`、`recovery_success_early_count`、
+`recovery_success_middle_count`、`recovery_success_late_count` 和
+`recovery_success_dynamic_fall_count`。旧 checkpoint 可以评估，但旧的 `metrics.jsonl`
+没有保存 reset 来源，不能事后精确拆分历史 success。
+
 论文形式的 matched pushes：100 个并行环境，`±x/±y` 每方向 25 次，
 525–575 N、持续 0.2 秒：
 
@@ -430,6 +452,8 @@ RUN_DIR/
 - `tracking_fall_candidate_count` 与配置生成的 `fall_recovery_probability`；warmup 中前者可
   非零，但后者和 entered count 应为 0；
 - `recovery_success_count` 与 `transition_completed_count`；
+- 分来源的 `recovery_success_{static,early,middle,late,dynamic_fall}_count`，防止后段接近
+  站立的 reset 掩盖静止倒地失败；
 - 每 1000 Recovery step 的 success/failure；
 - matched-push 的 `paper_fall_count`、`tracking_resumption_count` 和恢复延迟；
 - KL、policy std、action clipping、NaN/Inf 与 PhysX/CUDA 错误。

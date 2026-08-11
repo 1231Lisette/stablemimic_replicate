@@ -29,6 +29,10 @@ parser.add_argument(
     help="With --standard-recovery, retain the source motion velocity as a diagnostic control.",
 )
 parser.add_argument(
+    "--recovery-phase-bin", choices=("early", "middle", "late"), default=None,
+    help="Evaluate Recovery resets sampled only from one normalized reference-phase third.",
+)
+parser.add_argument(
     "--enable-early-termination", action="store_true",
     help="Use training-time fall/failure resets (paper evaluation leaves them disabled).",
 )
@@ -57,6 +61,8 @@ from stablemimic.sim import close_simulation_app
 def main() -> None:
     if args_cli.standard_recovery and args_cli.matched_pushes:
         parser.error("--standard-recovery and --matched-pushes are mutually exclusive")
+    if args_cli.recovery_phase_bin and (args_cli.standard_recovery or args_cli.matched_pushes):
+        parser.error("--recovery-phase-bin is mutually exclusive with other recovery protocols")
     if args_cli.reference_reset_velocity and not args_cli.standard_recovery:
         parser.error("--reference-reset-velocity requires --standard-recovery")
     env_cfg = StableMimicG1EnvCfg()
@@ -68,7 +74,8 @@ def main() -> None:
     env_cfg.decimation = config.environment.decimation
     env_cfg.action_scale = config.environment.action_scale
     env_cfg.action_clip = config.environment.action_clip
-    env_cfg.tracking_reset_probability = 0.0 if args_cli.standard_recovery else (
+    recovery_diagnostic = args_cli.standard_recovery or args_cli.recovery_phase_bin is not None
+    env_cfg.tracking_reset_probability = 0.0 if recovery_diagnostic else (
         1.0 if args_cli.matched_pushes else config.environment.tracking_reset_probability
     )
     env_cfg.transition_duration_s = config.environment.transition_duration_s
@@ -94,6 +101,15 @@ def main() -> None:
         args_cli.standard_recovery and not args_cli.reference_reset_velocity
     )
     env_cfg.reset_noise_enabled = not args_cli.standard_recovery
+    if args_cli.recovery_phase_bin:
+        phase_ranges = {
+            "early": (0.0, 1.0 / 3.0),
+            "middle": (1.0 / 3.0, 2.0 / 3.0),
+            "late": (2.0 / 3.0, 1.0),
+        }
+        env_cfg.recovery_phase_reset_min, env_cfg.recovery_phase_reset_max = phase_ranges[
+            args_cli.recovery_phase_bin
+        ]
     env = StableMimicG1Env(env_cfg)
     if args_cli.matched_pushes and env.num_envs < 100:
         raise ValueError("--matched-pushes requires --num-envs >= 100")
@@ -115,7 +131,7 @@ def main() -> None:
     standard_max_upright_hold_steps = None
     standard_max_height = None
     standard_min_tilt = None
-    if args_cli.standard_recovery:
+    if recovery_diagnostic:
         standard_recovery_labels = classify_fallen_orientation(
             env.recovery_evaluation_state()["projected_gravity"].clone()
         )
@@ -346,11 +362,14 @@ def main() -> None:
                 "transiently_upright": transient_upright,
             }
         hold_seconds = standard_max_upright_hold_steps.float() * env.step_dt
-        metrics["standard_recovery"] = {
+        diagnostic = {
+            "profile": "static" if args_cli.standard_recovery else args_cli.recovery_phase_bin,
             "definition": (
                 "lowest root-height frame satisfying height<=0.5m and tilt>=60deg in "
                 "each eligible atomic clip; reset noise disabled, no push; "
                 + ("source motion velocity" if args_cli.reference_reset_velocity else "zero velocity")
+                if args_cli.standard_recovery
+                else "normalized reference phase third; training reset noise and source velocity; no push"
             ),
             "trials": env.num_envs,
             "physical_success_definition": (
@@ -379,6 +398,9 @@ def main() -> None:
             "p90_max_upright_hold_seconds": float(torch.quantile(hold_seconds, 0.9)),
             "by_initial_orientation": by_orientation,
         }
+        metrics["recovery_reset_diagnostic"] = diagnostic
+        if args_cli.standard_recovery:
+            metrics["standard_recovery"] = diagnostic
     output = Path(args_cli.output).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")

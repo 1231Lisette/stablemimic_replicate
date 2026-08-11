@@ -115,6 +115,9 @@ class StableMimicRunner:
                     "timeout",
                 )
             }
+            success_source_counts = {
+                name: 0 for name in ("static", "early", "middle", "late", "dynamic_fall")
+            }
             for _step in range(self.config.ppo.rollout_steps):
                 self.agent.update_normalizers(actor_raw, gate_raw, critic_raw)
                 actor_obs, gate_obs, critic_obs = self.agent.normalized(actor_raw, gate_raw, critic_raw)
@@ -171,6 +174,12 @@ class StableMimicRunner:
                 gate_weight_sum += policy_output.gate_weights.sum(0)
                 for name in event_counts:
                     event_counts[name] += int(self.env.unwrapped.latest_events[name].sum())
+                success_mask = self.env.unwrapped.latest_events["recovery_success"]
+                reset_sources = self.env.unwrapped.recovery_reset_sources
+                for source_id, source_name in enumerate(success_source_counts, start=1):
+                    success_source_counts[source_name] += int(
+                        (success_mask & (reset_sources == source_id)).sum()
+                    )
                 actor_raw, critic_raw = next_observation["policy"], next_observation["critic"]
                 gate_raw = self.env.unwrapped.gate_observations
             with torch.no_grad():
@@ -223,6 +232,10 @@ class StableMimicRunner:
                     self.config.ppo.rollout_steps * self.env.unwrapped.num_envs, 1
                 ),
                 **{f"{name}_count": count for name, count in event_counts.items()},
+                **{
+                    f"recovery_success_{name}_count": count
+                    for name, count in success_source_counts.items()
+                },
                 "wall_seconds": time.perf_counter() - started,
                 **asdict(metrics),
             }

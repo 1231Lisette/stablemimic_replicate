@@ -42,6 +42,8 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     recovery_reset_at_fallen_state: bool = False
     recovery_reset_zero_velocity: bool = False
     reset_noise_enabled: bool = True
+    recovery_phase_reset_min: float = -1.0
+    recovery_phase_reset_max: float = -1.0
 
     sim: SimulationCfg = SimulationCfg(
         dt=0.005,

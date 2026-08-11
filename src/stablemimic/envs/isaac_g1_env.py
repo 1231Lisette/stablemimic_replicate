@@ -79,6 +79,8 @@ class StableMimicG1Env(DirectRLEnv):
         self._recovery_motion_ids = torch.zeros_like(self._tracking_motion_ids)
         self._tracking_times = torch.zeros(self.num_envs, device=self.device)
         self._recovery_times = torch.zeros(self.num_envs, device=self.device)
+        # 0 tracking, 1 static nadir, 2 early, 3 middle, 4 late, 5 dynamic fall.
+        self._recovery_reset_source = torch.zeros_like(self._tracking_motion_ids)
         self._tracking_xy_offset = torch.zeros(self.num_envs, 2, device=self.device)
         self._recovery_xy_offset = torch.zeros(self.num_envs, 2, device=self.device)
         self._history_needs_reset = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -126,6 +128,11 @@ class StableMimicG1Env(DirectRLEnv):
     @property
     def phases(self) -> torch.Tensor:
         return self._phase_state.phase
+
+    @property
+    def recovery_reset_sources(self) -> torch.Tensor:
+        """Training-only provenance for stratified success diagnostics."""
+        return self._recovery_reset_source
 
     @property
     def latest_events(self) -> dict[str, torch.Tensor]:
@@ -501,6 +508,7 @@ class StableMimicG1Env(DirectRLEnv):
         self._gate_tracking_override[env_ids] = False
         self._sequence_done[env_ids] = False
         self._phase_state.enter_recovery(env_ids)
+        self._recovery_reset_source[env_ids] = 5
         self._write_terminal_recovery_reference(env_ids)
 
     def _kinematic_state(
@@ -563,6 +571,18 @@ class StableMimicG1Env(DirectRLEnv):
         )
         recovery_reset = torch.rand(count, device=self.device) >= self.cfg.tracking_reset_probability
         recovery_ids, recovery_times = self._recovery_sampler.sample(count)
+        phase_override = self.cfg.recovery_phase_reset_min >= 0.0
+        if phase_override:
+            if not (
+                0.0 <= self.cfg.recovery_phase_reset_min
+                < self.cfg.recovery_phase_reset_max <= 1.0
+            ):
+                raise ValueError("recovery phase reset range must satisfy 0 <= min < max <= 1")
+            recovery_ids = self._motions.recovery.random_ids(count)
+            normalized_time = torch.empty(count, device=self.device).uniform_(
+                self.cfg.recovery_phase_reset_min, self.cfg.recovery_phase_reset_max
+            )
+            recovery_times = normalized_time * self._motions.recovery.durations[recovery_ids]
         static_recovery_reset = recovery_reset & (
             torch.rand(count, device=self.device) < self.cfg.recovery_static_reset_probability
         )
@@ -579,6 +599,11 @@ class StableMimicG1Env(DirectRLEnv):
             recovery_times[static_recovery_reset] = static_times
         self._recovery_motion_ids[env_ids] = recovery_ids
         self._recovery_times[env_ids] = recovery_times
+        normalized_phase = recovery_times / self._motions.recovery.durations[recovery_ids]
+        phase_source = 2 + torch.clamp((3.0 * normalized_phase).long(), 0, 2)
+        reset_source = torch.where(recovery_reset, phase_source, torch.zeros_like(phase_source))
+        reset_source[static_recovery_reset] = 1
+        self._recovery_reset_source[env_ids] = reset_source
         self._phase_state.reset(env_ids, recovery_reset)
         tracking_sample = self._motions.tracking.sample(
             self._tracking_motion_ids[env_ids], self._tracking_times[env_ids]
