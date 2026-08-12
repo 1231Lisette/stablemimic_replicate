@@ -3,6 +3,26 @@
 本文件保存失败实验和修正依据。不同代码语义下的 reward 绝对值不能直接横向比较，所有旧
 checkpoint 都保留在 `gpu_data` 作证据，不放入 Git。
 
+## 2026-08-13：官方 GMR G1-29DoF 重定向与参考修正
+
+- 停止 v5 PPO 后，冻结官方 GMR revision
+  `bb1bbe40774794fceb2a7c579a3464a28e68c844`，从 Ubisoft 官方 raw LAFAN1 BVH 重新生成，
+  不覆盖 `lvhaidong/LAFAN1_Retargeting_Dataset` 的旧 CSV。
+- 冻结 revision 的官方 batch script 与库接口不一致，直接运行会因不存在的
+  `load_lafan1_file` 失败，而且 `src_human="bvh"` 不能选择实际 `bvh_lafan1` 配置。
+  新增 headless adapter，冻结上游保持只读。
+- 第一条 5,047-frame `fallAndGetUp1_subject1` 基线最大帧间关节速度
+  `29.4766 rad/s`，627 个元素超过 `3*pi`。异常不是 angle wrap；显式打开上游
+  `use_velocity_limit` 也没有改变最终 30 FPS 输出。
+- MuJoCo 真实 floor collision 复核显示基线最深穿地约 12.86 cm。仅按 body origin
+  判断会低估穿透。
+- 修正采用双向对称 `3*pi rad/s` rate projection，随后根据修正姿态的 floor contact
+  distance 生成不低于所需高度、变化不超过 `0.5 m/s`、带 2 mm clearance 的 root-Z
+  envelope。单样本结果为 0 速度超限、0 floor penetration、0 joint-limit violation；
+  关节改动 RMSE `0.00841 rad`，root XY 与 quaternion 不变。
+- 同一 4.5/5.7/6.5/8.5/10.0 s 双视角重新渲染通过，动作语义保持。该结果仍只是
+  reference 运动学播放；必须完成 14 文件 QA 和 privileged physics replay 后才能重新训练。
+
 ## 最终定位到的主要错误
 
 1. **Recovery 数据粒度错误（当前首要根因）**：6 个 `fallAndGetUp*.csv` 各长

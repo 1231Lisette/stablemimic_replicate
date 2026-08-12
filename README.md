@@ -52,6 +52,7 @@ stablemimic_replicate/
 │   └── sim/                      # G1 29→43 joint mapping、关闭 watchdog
 ├── scripts/
 │   ├── audit_lafan1.py           # 数据/原子 recovery clip 审计
+│   ├── retarget_lafan1_gmr.py    # raw BVH→GMR G1-29DoF→36列 CSV + QA
 │   ├── train_stablemimic.py      # tracking/recovery/joint 训练与续训
 │   ├── evaluate_stablemimic.py   # Isaac 确定性/推倒评估
 │   ├── evaluate_mujoco.py        # MuJoCo adapter 边界
@@ -122,7 +123,8 @@ Actor/Gate 看不到所匹配的 motion id、frame、phase 或 hidden recovery s
 ```text
 代码: /root/gpufree-share/stablemimic_replicate
 数据: /root/gpufree-data/stablemimic_replicate
-CSV : /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
+旧 CSV : /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
+GMR CSV: /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/csv
 运行输出: /root/gpufree-data/stablemimic_replicate/runs
 ```
 
@@ -153,6 +155,115 @@ git pull --ff-only origin main
 cd /root/gpufree-share/stablemimic_replicate
 export PYTHONPATH=src
 ```
+
+## 0. 从 raw LAFAN1 用 GMR 重定向（训练前必做）
+
+旧的公开 G1 CSV 保留用于 A/B，不覆盖。正式 reference 从 Ubisoft raw LAFAN1 BVH 使用
+冻结的官方 [YanjieZe/GMR](https://github.com/YanjieZe/GMR) `unitree_g1` 29-DoF 配置生成。
+当前冻结 revision 为 `bb1bbe40774794fceb2a7c579a3464a28e68c844`。
+
+该 revision 的上游 `bvh_to_robot_dataset.py` 与同 revision 库接口不一致：脚本导入不存在的
+`load_lafan1_file`，并使用错误的 `src_human="bvh"` key。仓库 adapter 不修改冻结上游，
+而是调用实际存在的 `load_bvh_file(..., format="lafan1")` 与
+`src_human="bvh_lafan1"`，逐项验证关节顺序并输出 pickle、36 列 CSV 和 manifest：
+
+```bash
+env PYTHONPATH=src:/root/gpufree-data/stablemimic_replicate/tools/gmr_py311 \
+  /workspace/isaaclab/isaaclab.sh -p scripts/retarget_lafan1_gmr.py \
+  --src-folder /root/gpufree-data/stablemimic_replicate/datasets/lafan1_raw/bvh \
+  --output-root /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected \
+  --gmr-root /root/gpufree-data/stablemimic_replicate/tools/GMR-bb1bbe4 \
+  --gmr-revision bb1bbe40774794fceb2a7c579a3464a28e68c844 \
+  --joint-velocity-limit 9.42477796076938 \
+  --ground-clearance 0.002 \
+  --ground-offset-speed-limit 0.5
+```
+
+默认只选择 8 个 `dance*.bvh` 与 6 个 `fallAndGetUp*.bvh`。后处理使用双向对称 rate
+projection 约束真正的 IK 帧跳；随后按 MuJoCo floor contact distance 生成平滑、非穿透的
+root-Z offset。它不会修改 root XY、root quaternion 或冻结的 GMR checkout。
+
+生成后必须检查 `manifest.json`，14 条动作均须满足：
+
+- `velocity_elements_over_limit == 0`；
+- `maximum_floor_penetration_m == 0`；
+- quaternion norm 接近 1，29 关节顺序与 CSV loader 完全一致；
+- 视觉检查没有明显悬空、肢体畸变或左右映射错误。
+
+任何一项失败都不得切换训练配置或启动 PPO。
+
+### 后台运行与第二天检查
+
+先确认没有同名任务，避免两个进程同时写一个输出目录：
+
+```bash
+pgrep -af "scripts/retarget_lafan1_gmr.py" || true
+```
+
+没有输出时，才可从头在后台生成。`--overwrite` 表示一致地重建这个专用生成目录；不会覆盖
+旧的 `/datasets/lafan1/g1`：
+
+```bash
+cd /root/gpufree-share/stablemimic_replicate
+OUT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected
+mkdir -p "$OUT"
+
+nohup env PYTHONPATH=src:/root/gpufree-data/stablemimic_replicate/tools/gmr_py311 \
+  /workspace/isaaclab/isaaclab.sh -p scripts/retarget_lafan1_gmr.py \
+  --src-folder /root/gpufree-data/stablemimic_replicate/datasets/lafan1_raw/bvh \
+  --output-root "$OUT" \
+  --gmr-root /root/gpufree-data/stablemimic_replicate/tools/GMR-bb1bbe4 \
+  --gmr-revision bb1bbe40774794fceb2a7c579a3464a28e68c844 \
+  --joint-velocity-limit 9.42477796076938 \
+  --ground-clearance 0.002 \
+  --ground-offset-speed-limit 0.5 \
+  --overwrite > "$OUT/retarget.log" 2>&1 < /dev/null &
+
+echo $! > "$OUT/retarget.pid"
+echo "background PID=$(cat "$OUT/retarget.pid")"
+```
+
+第二天查看状态和已完成数量：
+
+```bash
+OUT=/root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected
+PID=$(cat "$OUT/retarget.pid")
+ps -p "$PID" -o pid,etime,stat,pcpu,pmem,cmd
+tail -n 30 "$OUT/retarget.log"
+find "$OUT/csv" -maxdepth 1 -name "*.csv" -type f | wc -l
+```
+
+正常完成时，进程已经退出、CSV 数量为 14、日志末尾出现 `Wrote 14 motions`，并生成
+`manifest.json`：
+
+```bash
+grep "Wrote 14 motions" "$OUT/retarget.log"
+test -f "$OUT/manifest.json"
+
+python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("/root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected")
+manifest = json.loads((root / "manifest.json").read_text())
+motions = manifest["motions"]
+assert len(motions) == 14, len(motions)
+assert all(m["velocity_elements_over_limit"] == 0 for m in motions)
+assert all(m["maximum_floor_penetration_m"] <= 1e-9 for m in motions)
+assert all(abs(m["quaternion_norm_min"] - 1.0) < 1e-6 for m in motions)
+assert all(abs(m["quaternion_norm_max"] - 1.0) < 1e-6 for m in motions)
+print("[PASS] 14/14 GMR references passed manifest QA")
+print("max raw/final joint velocity:",
+      max(m["raw_maximum_abs_joint_velocity_rad_s"] for m in motions),
+      max(m["maximum_abs_joint_velocity_rad_s"] for m in motions))
+print("max post-joint penetration / final penetration:",
+      max(m["post_joint_limit_maximum_floor_penetration_m"] for m in motions),
+      max(m["maximum_floor_penetration_m"] for m in motions))
+PY
+```
+
+如果 `ps` 仍显示进程，就只继续等待，不要再次启动。如果进程已退出但没有
+`Wrote 14 motions`/`manifest.json`，先查看 `tail -n 100 "$OUT/retarget.log"`，不要启动训练。
 
 ## 1. 检查环境与数据
 
