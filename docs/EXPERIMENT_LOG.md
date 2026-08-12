@@ -232,3 +232,13 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
 - v5 semantics version 为 5。`--initialize-from` 只载入 v4 agent/normalizer，重置其余状态。
   fresh Adam `1e-3` 在 1024-env 首轮产生 KL `75.9`，故初始 LR 改为 `1e-5`；复测首轮
   KL `0.00522`、std `0.21373`、clip `0`。正式实验只到 iteration 100 再复测四个阶段。
+- `joint_recovery_frontier_v5` 从 v4 iteration-1000 agent warm start，完成 200 iterations；
+  fall switch 始终为 0，KL 最终 `0.00781`、std `0.21036`、clip 0，数值稳定，但所有
+  200 轮训练内分来源 Recovery success 均为 0，progress reward 最终仍为 `-0.00226`。
+- 固定评估按 `static/early/middle/late` 比较：v4 为 `0/1/10/75`，v5 iteration 100 为
+  `0/2/12/72`，iteration 200 为 `0/1/13/79`（每组 256 trial）。iteration 100 的静止
+  最大高度中位数曾从 `0.341m` 升到 `0.373m`，iteration 200 又回落到 `0.361m`；静止物理
+  成功始终为 0，前段也没有持续改善，而中后段继续提高。
+- 按预设停止规则终止 v5，不继续到 500/1000。更多同配置训练主要优化中后段，尚无证据能
+  跨越真正倒地点的撑地/翻身门槛。下一实验应先把运动学 get-up reference 转为当前 G1
+  接触/执行器下的动力学可执行轨迹，或引入经验证的阶段化支撑目标，而不是再调训练轮数。
