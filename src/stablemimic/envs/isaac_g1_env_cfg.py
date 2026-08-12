@@ -4,6 +4,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
@@ -44,6 +45,7 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     reset_noise_enabled: bool = True
     recovery_phase_reset_min: float = -1.0
     recovery_phase_reset_max: float = -1.0
+    enable_physical_diagnostics: bool = False
 
     sim: SimulationCfg = SimulationCfg(
         dt=0.005,
@@ -68,6 +70,12 @@ class StableMimicG1EnvCfg(DirectRLEnvCfg):
     )
 
     robot: ArticulationCfg = G1_29DOF_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    diagnostic_contact_sensor: ContactSensorCfg = ContactSensorCfg(
+        prim_path="/World/envs/env_.*/Robot/.*",
+        history_length=1,
+        update_period=0.005,
+        track_air_time=False,
+    )
     reference_robot: ArticulationCfg = G1_29DOF_CFG.replace(prim_path="/World/envs/env_.*/ReferenceRobot")
     reference_robot.spawn.rigid_props.disable_gravity = True
     reference_robot.spawn.activate_contact_sensors = False

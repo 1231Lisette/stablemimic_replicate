@@ -31,6 +31,10 @@ environment:
   # Ensure Recovery learns to initiate motion from rest, rather than relying
   # only on velocity inherited from a moving reference frame.
   recovery_static_reset_probability: 0.25
+  # v5 competence frontier: non-static Recovery resets focus on the boundary
+  # between the currently weak middle and learned late portion.
+  recovery_phase_reset_min: 0.40
+  recovery_phase_reset_max: 0.75
   observation_noise_std: 0.0       # reproduction choice; disabled baseline
 
 # The public files contain repeated falls/get-ups. Treating each 102--168 s
@@ -73,6 +77,14 @@ reward:
   torque_penalty: -0.00002
   power_penalty: -0.00001
   joint_limit_penalty: -1.0
+  # Potential-based physical progress supplements kinematic imitation because
+  # direct reference joint playback cannot reproduce the retargeted root rise.
+  recovery_progress_bonus: 1.0
+  recovery_progress_height_min: 0.25
+  recovery_progress_height_max: 0.70
+  recovery_progress_tilt_max_degrees: 90.0
+  recovery_progress_height_weight: 0.6
+  recovery_progress_upright_weight: 0.4
 
 model:
   history_length: 4
@@ -86,7 +98,9 @@ ppo:
   rollout_steps: 24
   epochs: 5
   minibatches: 4
-  learning_rate: 0.001
+  # Warm-started v5 policy: a fresh Adam at 1e-3 destroys the mature policy
+  # on its first update (measured KL 75.9 at 1024 envs).
+  learning_rate: 0.00001
   gamma: 0.99
   gae_lambda: 0.95
   clip_ratio: 0.2

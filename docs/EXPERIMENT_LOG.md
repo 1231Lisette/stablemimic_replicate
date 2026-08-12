@@ -210,3 +210,25 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
 - 新增 reset provenance：每个环境记录 `static nadir`、`early`、`middle`、`late` 或
   `dynamic fall`，runner 从后续 iteration 起分别输出对应 success count。旧 metrics 没有
   保存该 provenance，无法事后精确拆分；上述受控评估是对当前策略能力的分层测量。
+
+## iteration-1000 物理可行性诊断与 v5 决策（2026-08-12）
+
+- 新增 evaluation-only 全身 contact sensor，按手/肘/膝/脚/躯干统计前 2 秒接触，并记录
+  逐关节 torque utilization、soft-limit、分 reward 和 0.5/1/2 秒高度/倾角进展；这些量
+  不进入 policy observation 或训练 reward。
+- checkpoint policy 的 256 个静止倒地 trial 全部至少有一个关节触及 effort limit；前 2 秒
+  saturation 占 joint-step 的 `4.83%`，waist pitch/roll 分别有 `57.1%/56.7%` step 饱和。
+  手部接触占 `2.51%` step，肘部为 `0%`；俯卧 2 秒后高度中位数下降 `0.277m`。
+- privileged 下一参考帧关节目标完全绕过策略，零初速度和源参考速度两组均为物理成功
+  `0/256`、terminal success `0/256`。只达到过高度阈值 `1/256`、倾角阈值 `27/256`，
+  没有同时保持。故策略无知或清零示范动量都不足以解释失败。
+- 参考直驱下，2 秒时参考 root 高度增量中位数为 `+0.330m`，实际仅 `+0.004m`；俯卧
+  参考为 `+0.314m`，实际反而 `-0.223m`。参考 link origin 在地面附近的比例为手
+  `74.2%`、肘 `39.9%`，实际 force contact 仅手 `5.9%`、肘 `0%`。link origin 不是
+  collision point，但差距证明 retarget 后的运动学 root/support 不能由当前动力学直接重放。
+- 问题是数据动力学兼容性与课程共同作用，不是简单“80 条太少”。v5 不提高真实 G1 effort
+  limit，也不复制数据；reference 保留为姿态/阶段指导，新增真实高度与直立度的相邻-step
+  potential progress，非静止 reset 聚焦 phase `0.40--0.75`，25% Recovery reset 仍为最低点。
+- v5 semantics version 为 5。`--initialize-from` 只载入 v4 agent/normalizer，重置其余状态。
+  fresh Adam `1e-3` 在 1024-env 首轮产生 KL `75.9`，故初始 LR 改为 `1e-5`；复测首轮
+  KL `0.00522`、std `0.21373`、clip `0`。正式实验只到 iteration 100 再复测四个阶段。

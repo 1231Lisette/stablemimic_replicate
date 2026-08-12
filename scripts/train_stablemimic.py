@@ -17,6 +17,10 @@ parser.add_argument("--num-envs", type=int, default=None)
 parser.add_argument("--iterations", type=int, default=None)
 parser.add_argument("--run-dir", default=None)
 parser.add_argument("--resume", default=None)
+parser.add_argument(
+    "--initialize-from", default=None,
+    help="Load only model/normalizer weights, resetting optimizer and iteration for new semantics.",
+)
 parser.add_argument("--mode", choices=("tracking", "recovery", "joint"), default="joint")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -28,6 +32,8 @@ if args_cli.num_envs is not None and args_cli.num_envs <= 0:
     parser.error("--num-envs must be positive")
 if args_cli.iterations is not None and args_cli.iterations <= 0:
     parser.error("--iterations must be positive")
+if args_cli.resume and args_cli.initialize_from:
+    parser.error("--resume and --initialize-from are mutually exclusive")
 
 faulthandler.enable()
 print("[STAGE] Launching Isaac Sim...", flush=True)
@@ -90,12 +96,16 @@ def main() -> None:
     env_cfg.recovery_static_reset_probability = (
         repository_config.environment.recovery_static_reset_probability
     )
+    env_cfg.recovery_phase_reset_min = repository_config.environment.recovery_phase_reset_min
+    env_cfg.recovery_phase_reset_max = repository_config.environment.recovery_phase_reset_max
     env_cfg.observation_noise_std = repository_config.environment.observation_noise_std
     env = StableMimicG1Env(env_cfg)
     run_dir = args_cli.run_dir or repository_config.output_root / "stablemimic_g1"
     runner = StableMimicRunner(env, repository_config, run_dir)
     if args_cli.resume:
         runner.load(args_cli.resume)
+    if args_cli.initialize_from:
+        runner.initialize_agent(args_cli.initialize_from)
     iterations = args_cli.iterations or repository_config.training.max_iterations
     print(
         f"[STAGE] Training code ready: mode={args_cli.mode}, envs={env.num_envs}, "

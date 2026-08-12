@@ -303,6 +303,23 @@ phase 语义。`joint_ab_std_020`、`joint_paper_aligned_v1`、`joint_terminal_e
 语义的 checkpoint 才可续训。
 runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错，避免误续训。
 
+v5 使用 `--initialize-from` 从旧 checkpoint 只载入 Agent 和 normalizer，但重置 optimizer、
+iteration 和 failure histogram。它与 `--resume` 互斥，适合奖励或 curriculum 语义改变后的
+显式 warm start：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1.yaml --mode joint \
+  --num-envs 1024 --iterations 100 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/joint_recovery_frontier_v5 \
+  --initialize-from /root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/checkpoint_001000.pt \
+  --headless
+```
+
+v5 的非静止 Recovery reset 限制在归一化 phase `0.40--0.75`，同时保留 25% Recovery
+reset 从静止最低倒地点开始。新增势函数只奖励相邻 policy step 的真实高度/直立度进步，
+不会直接奖励参考 root 的运动，也不会修改策略观察。
+
 ## 5. 确定性评估
 
 普通评估：
@@ -333,6 +350,19 @@ runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错�
 
 物理成功定义为高度至少 0.7m、倾角不超过 30°并持续 0.5 秒，不要求关节姿态恰好等于
 示范末帧。`--reference-reset-velocity` 只用于诊断示范动量依赖，不是标准协议。
+
+物理诊断可记录前 2 秒的支撑接触、逐关节力矩/限位、分 reward 和高度/倾角进展；
+`--reference-actions` 会绕过策略，用 privileged 下一帧参考关节角测试 retarget/PD/contact：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/evaluate_stablemimic.py \
+  --config configs/stablemimic_g1.yaml \
+  --checkpoint /root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/checkpoint_001000.pt \
+  --num-envs 256 --steps 1000 --standard-recovery \
+  --physical-diagnostics --reference-actions \
+  --output /root/gpufree-data/stablemimic_replicate/runs/joint_static_recovery_v4/physical.json \
+  --headless
+```
 
 若要判断训练内 success 是否只来自接近站立的参考帧，可分别从 Recovery 轨迹的前、中、后
 三分之一随机 reset；该诊断保留训练时的 reset 噪声和参考速度，但不施加外力：

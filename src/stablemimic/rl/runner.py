@@ -16,7 +16,7 @@ from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCr
 from .ppo import PPO
 from .storage import RolloutStorage
 
-TRAINING_SEMANTICS_VERSION = 4
+TRAINING_SEMANTICS_VERSION = 5
 
 
 class StableMimicRunner:
@@ -47,13 +47,19 @@ class StableMimicRunner:
             raise ValueError(
                 "Checkpoint training semantics are incompatible: expected "
                 f"{TRAINING_SEMANTICS_VERSION}, got {version!r}. Start a fresh run after "
-                "atomic recovery segmentation/fall-curriculum changes."
+                "reward/curriculum changes, or use initialize_agent for an explicit warm start."
             )
         self.agent.load_state_dict(payload["agent"])
         self.ppo.optimizer.load_state_dict(payload["optimizer"])
         self.iteration = int(payload["iteration"])
         if "environment_training_state" in payload:
             self.env.unwrapped.load_training_state(payload["environment_training_state"])
+
+    def initialize_agent(self, checkpoint: str | Path) -> None:
+        """Warm-start model/normalizers while resetting optimizer and iteration."""
+        payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
+        self.agent.load_state_dict(payload["agent"])
+        self.iteration = 0
 
     def save(self, name: str | None = None) -> Path:
         checkpoint = self.run_dir / (name or f"checkpoint_{self.iteration:06d}.pt")
@@ -91,6 +97,7 @@ class StableMimicRunner:
             recovery_reward_sum = 0.0
             recovery_active_similarity_sum = 0.0
             recovery_terminal_similarity_sum = 0.0
+            recovery_progress_reward_sum = 0.0
             recovery_terminal_threshold_samples = 0
             tracking_samples = 0
             recovery_samples = 0
@@ -154,6 +161,11 @@ class StableMimicRunner:
                 recovery_terminal_similarity_sum += float(
                     self.env.unwrapped.latest_terminal_similarity[recovery_phase_mask].sum()
                 )
+                recovery_progress_reward_sum += float(
+                    self.env.unwrapped.latest_reward_components["recovery_progress"][
+                        recovery_phase_mask
+                    ].sum()
+                )
                 recovery_terminal_threshold_samples += int(
                     (
                         self.env.unwrapped.latest_terminal_similarity[recovery_phase_mask]
@@ -202,6 +214,9 @@ class StableMimicRunner:
                 ),
                 "recovery_terminal_similarity_mean": (
                     recovery_terminal_similarity_sum / max(recovery_phase_samples, 1)
+                ),
+                "recovery_progress_reward_mean": (
+                    recovery_progress_reward_sum / max(recovery_phase_samples, 1)
                 ),
                 "recovery_terminal_threshold_fraction": (
                     recovery_terminal_threshold_samples / max(recovery_phase_samples, 1)

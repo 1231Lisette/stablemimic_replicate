@@ -5,7 +5,11 @@ try:
 except ModuleNotFoundError:
     torch = None
 
-from stablemimic.eval import classify_fallen_orientation, matched_push_protocol
+from stablemimic.eval import (
+    classify_fallen_orientation,
+    matched_push_protocol,
+    support_body_groups,
+)
 
 
 class EvaluationProtocolTests(unittest.TestCase):
@@ -29,3 +33,16 @@ class EvaluationProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(min(event.force_newtons for event in events), 525.0)
         self.assertAlmostEqual(max(event.force_newtons for event in events), 575.0)
         self.assertTrue(all(event.duration_seconds == 0.2 for event in events))
+
+    def test_support_body_groups(self) -> None:
+        names = [
+            "pelvis", "torso_link", "left_wrist_yaw_link", "right_elbow_link",
+            "left_knee_link", "right_ankle_roll_link", "head_link",
+        ]
+        self.assertEqual(support_body_groups(names), {
+            "hands": [2],
+            "elbows": [3],
+            "knees": [4],
+            "feet": [5],
+            "trunk": [0, 1],
+        })

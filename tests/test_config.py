@@ -10,6 +10,14 @@ class ConfigTests(unittest.TestCase):
         config = load_config(path)
         self.assertAlmostEqual(config.environment.physics_dt * config.environment.decimation, 0.02)
         self.assertAlmostEqual(config.environment.recovery_static_reset_probability, 0.25)
+        self.assertAlmostEqual(config.environment.recovery_phase_reset_min, 0.40)
+        self.assertAlmostEqual(config.environment.recovery_phase_reset_max, 0.75)
+        self.assertAlmostEqual(config.reward.recovery_progress_bonus, 1.0)
+        self.assertAlmostEqual(
+            config.reward.recovery_progress_height_weight
+            + config.reward.recovery_progress_upright_weight,
+            1.0,
+        )
         self.assertTrue(config.recovery_segmentation.trim_to_tilted_nadir)
         self.assertEqual(config.environment.action_clip, 100.0)
         self.assertEqual(config.model.expert_hidden_dims, (512, 256, 128))

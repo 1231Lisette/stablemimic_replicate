@@ -10,6 +10,7 @@ import torch
 import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
+from isaaclab.sensors import ContactSensor
 
 from stablemimic.config import load_config
 from stablemimic.core.geometry import (
@@ -81,6 +82,7 @@ class StableMimicG1Env(DirectRLEnv):
         self._recovery_times = torch.zeros(self.num_envs, device=self.device)
         # 0 tracking, 1 static nadir, 2 early, 3 middle, 4 late, 5 dynamic fall.
         self._recovery_reset_source = torch.zeros_like(self._tracking_motion_ids)
+        self._recovery_progress_potential = torch.zeros(self.num_envs, device=self.device)
         self._tracking_xy_offset = torch.zeros(self.num_envs, 2, device=self.device)
         self._recovery_xy_offset = torch.zeros(self.num_envs, 2, device=self.device)
         self._history_needs_reset = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
@@ -114,6 +116,15 @@ class StableMimicG1Env(DirectRLEnv):
             for name in (
                 "total", "tracking", "root_position", "root_orientation", "body_position",
                 "body_orientation", "body_linear_velocity", "body_angular_velocity", "regularization",
+                "recovery_progress",
+            )
+        }
+        self._latest_reward_components = {
+            name: torch.zeros(self.num_envs, device=self.device)
+            for name in (
+                "root_position", "root_orientation", "body_position", "body_orientation",
+                "body_linear_velocity", "body_angular_velocity", "regularization",
+                "recovery_progress",
             )
         }
 
@@ -147,6 +158,10 @@ class StableMimicG1Env(DirectRLEnv):
     def latest_terminal_similarity(self) -> torch.Tensor:
         return self._latest_terminal_similarity
 
+    @property
+    def latest_reward_components(self) -> dict[str, torch.Tensor]:
+        return self._latest_reward_components
+
     def recovery_evaluation_state(self) -> dict[str, torch.Tensor]:
         """Expose paper-level fall signals without leaking them into the policy."""
         projected_gravity = self._robot.data.projected_gravity_b
@@ -158,6 +173,47 @@ class StableMimicG1Env(DirectRLEnv):
             "command_height": self._tracking_sample.root_pos[:, 2],
             "similarity": self._latest_similarity,
             "terminal_similarity": self._latest_terminal_similarity,
+        }
+
+    def physical_diagnostic_state(self) -> dict[str, torch.Tensor | list[str]]:
+        """Expose simulator-only contact/control evidence for offline evaluation."""
+        if self._contact_sensor is None:
+            raise RuntimeError("physical diagnostics were not enabled in the environment config")
+        joint_position = self._robot.data.joint_pos[:, self._body_joint_ids]
+        soft_limits = self._robot.data.soft_joint_pos_limits[:, self._body_joint_ids]
+        limit_range = (soft_limits[..., 1] - soft_limits[..., 0]).clamp_min(1.0e-6)
+        distance_to_limit = torch.minimum(
+            joint_position - soft_limits[..., 0], soft_limits[..., 1] - joint_position
+        )
+        target = self._processed_actions
+        effort_limits = self._robot.data.joint_effort_limits[:, self._body_joint_ids].clamp_min(1.0e-6)
+        origins_z = self._terrain.env_origins[:, 2:3]
+        return {
+            "contact_body_names": list(self._contact_sensor.body_names),
+            "controlled_joint_names": [
+                self._robot.joint_names[index] for index in self._body_joint_ids.tolist()
+            ],
+            "articulation_body_names": list(self._robot.body_names),
+            "contact_force_magnitudes": self._contact_sensor.data.net_forces_w.norm(dim=-1),
+            "body_link_origin_heights": self._robot.data.body_pos_w[..., 2] - origins_z,
+            "reference_body_link_origin_heights": (
+                self._reference_robot.data.body_pos_w[..., 2]
+                - self._reference_z_offset
+                - origins_z
+            ),
+            "reference_root_height": (
+                self._reference_robot.data.root_pos_w[:, 2]
+                - self._reference_z_offset
+                - self._terrain.env_origins[:, 2]
+            ),
+            "torque_utilization": (
+                self._robot.data.applied_torque[:, self._body_joint_ids].abs() / effort_limits
+            ),
+            "near_soft_joint_limit": distance_to_limit <= 0.02 * limit_range,
+            "target_outside_soft_joint_limit": (
+                (target < soft_limits[..., 0]) | (target > soft_limits[..., 1])
+            ),
+            **{f"reward_{name}": value for name, value in self._latest_reward_components.items()},
         }
 
     def training_state(self) -> dict[str, torch.Tensor]:
@@ -182,6 +238,41 @@ class StableMimicG1Env(DirectRLEnv):
             is_global=True,
         )
 
+    def next_reference_action_diagnostic(self) -> torch.Tensor:
+        """Return privileged next-frame joint targets in policy action coordinates."""
+        recovery = self._phase_state.phase == int(MotionPhase.RECOVERY)
+        next_tracking_times = torch.minimum(
+            self._tracking_times + self.step_dt,
+            self._motions.tracking.durations[self._tracking_motion_ids],
+        )
+        next_recovery_times = torch.minimum(
+            self._recovery_times + self.step_dt,
+            self._motions.recovery.durations[self._recovery_motion_ids],
+        )
+        tracking = self._motions.tracking.sample(self._tracking_motion_ids, next_tracking_times)
+        recovery_sample = self._motions.recovery.sample(
+            self._recovery_motion_ids, next_recovery_times
+        )
+        target = torch.where(recovery[:, None], recovery_sample.joint_pos, tracking.joint_pos)
+        default = self._robot.data.default_joint_pos[:, self._body_joint_ids]
+        return (target - default) / self.cfg.action_scale
+
+    def _physical_recovery_potential(
+        self, root_height: torch.Tensor, projected_gravity: torch.Tensor
+    ) -> torch.Tensor:
+        config = self._repository_config.reward
+        height = (
+            (root_height - config.recovery_progress_height_min)
+            / (config.recovery_progress_height_max - config.recovery_progress_height_min)
+        ).clamp(0.0, 1.0)
+        upright_cosine = (-projected_gravity[:, 2]).clamp(-1.0, 1.0)
+        minimum_cosine = math.cos(math.radians(config.recovery_progress_tilt_max_degrees))
+        upright = ((upright_cosine - minimum_cosine) / (1.0 - minimum_cosine)).clamp(0.0, 1.0)
+        return (
+            config.recovery_progress_height_weight * height
+            + config.recovery_progress_upright_weight * upright
+        )
+
     def set_fall_recovery_probability(self, probability: float) -> None:
         """Set the training curriculum probability without changing policy inputs."""
         if not 0.0 <= probability <= 1.0:
@@ -195,6 +286,14 @@ class StableMimicG1Env(DirectRLEnv):
         self.scene.articulations["robot"] = self._robot
         self.scene.articulations["reference_robot"] = self._reference_robot
         self.scene.articulations["terminal_reference_robot"] = self._terminal_reference_robot
+        self._contact_sensor = None
+        if self.cfg.enable_physical_diagnostics:
+            if not self.cfg.robot.spawn.activate_contact_sensors:
+                raise ValueError(
+                    "robot.spawn.activate_contact_sensors must be true for physical diagnostics"
+                )
+            self._contact_sensor = ContactSensor(self.cfg.diagnostic_contact_sensor)
+            self.scene.sensors["diagnostic_contact_sensor"] = self._contact_sensor
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
         self._terrain = self.cfg.terrain.class_type(self.cfg.terrain)
@@ -383,6 +482,20 @@ class StableMimicG1Env(DirectRLEnv):
                 self._robot.data.soft_joint_pos_limits[:, self._body_joint_ids, 1],
             ),
         )
+        root_height = self._robot.data.root_pos_w[:, 2] - self._terrain.env_origins[:, 2]
+        current_progress_potential = self._physical_recovery_potential(
+            root_height, self._robot.data.projected_gravity_b
+        )
+        recovery_progress = torch.where(
+            recovery,
+            self._repository_config.reward.recovery_progress_bonus
+            * (current_progress_potential - self._recovery_progress_potential),
+            torch.zeros_like(current_progress_potential),
+        )
+        self._recovery_progress_potential.copy_(current_progress_potential)
+        for name in self._latest_reward_components:
+            value = recovery_progress if name == "recovery_progress" else getattr(breakdown, name)
+            self._latest_reward_components[name].copy_(value)
         maximum = sum(
             getattr(self._repository_config.reward, name).weight
             for name in (
@@ -437,10 +550,18 @@ class StableMimicG1Env(DirectRLEnv):
             self._tracking_xy_offset[began_transition] = robot_xy - env_xy - tracking_root
         tracking_weight, recovery_weight = self._phase_state.reward_weights()
         phase_weight = torch.where(recovery, recovery_weight, tracking_weight)
-        reward = (breakdown.tracking * phase_weight + breakdown.regularization) * self.step_dt
+        reward = (
+            (breakdown.tracking * phase_weight + breakdown.regularization) * self.step_dt
+            + recovery_progress
+        )
         reward = reward + began_transition.float() * self._repository_config.reward.success_bonus
         for name in self._episode_sums:
-            value = reward if name == "total" else getattr(breakdown, name) * self.step_dt
+            if name == "total":
+                value = reward
+            elif name == "recovery_progress":
+                value = recovery_progress
+            else:
+                value = getattr(breakdown, name) * self.step_dt
             self._episode_sums[name] += value
         fall_candidate, entered_recovery = self._tracking_fall_masks()
         self._latest_events["tracking_fall_candidate"].copy_(fall_candidate)
@@ -509,6 +630,9 @@ class StableMimicG1Env(DirectRLEnv):
         self._sequence_done[env_ids] = False
         self._phase_state.enter_recovery(env_ids)
         self._recovery_reset_source[env_ids] = 5
+        self._recovery_progress_potential[env_ids] = self._physical_recovery_potential(
+            root_height, self._robot.data.projected_gravity_b[env_ids]
+        )
         self._write_terminal_recovery_reference(env_ids)
 
     def _kinematic_state(
@@ -657,6 +781,10 @@ class StableMimicG1Env(DirectRLEnv):
         self._robot.write_root_pose_to_sim(root_pose, env_ids)
         self._robot.write_root_velocity_to_sim(root_velocity, env_ids)
         self._robot.write_joint_state_to_sim(joint_position, joint_velocity, None, env_ids)
+        reset_projected_gravity = projected_gravity_from_xyzw(wxyz_to_xyzw(root_quaternion))
+        self._recovery_progress_potential[env_ids] = self._physical_recovery_potential(
+            root_position[:, 2] - origins[:, 2], reset_projected_gravity
+        )
         self._history_needs_reset[env_ids] = True
 
         log = {}

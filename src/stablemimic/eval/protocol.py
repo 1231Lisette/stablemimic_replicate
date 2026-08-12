@@ -46,3 +46,22 @@ def classify_fallen_orientation(projected_gravity):
     result[y_dominant & (projected_gravity[:, 1] >= 0.0)] = 2
     result[y_dominant & (projected_gravity[:, 1] < 0.0)] = 3
     return result
+
+
+def support_body_groups(body_names: list[str]) -> dict[str, list[int]]:
+    """Group G1 rigid bodies that can reveal get-up support contacts."""
+    patterns = {
+        "hands": ("wrist", "hand"),
+        "elbows": ("elbow",),
+        "knees": ("knee",),
+        "feet": ("ankle", "foot"),
+        "trunk": ("pelvis", "torso"),
+    }
+    lowered = [name.lower() for name in body_names]
+    return {
+        group: [
+            index for index, name in enumerate(lowered)
+            if any(pattern in name for pattern in group_patterns)
+        ]
+        for group, group_patterns in patterns.items()
+    }

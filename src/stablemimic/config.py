@@ -29,6 +29,12 @@ class RewardCfg:
     torque_penalty: float = -2.0e-5
     power_penalty: float = -1.0e-5
     joint_limit_penalty: float = -1.0
+    recovery_progress_bonus: float = 0.0
+    recovery_progress_height_min: float = 0.25
+    recovery_progress_height_max: float = 0.70
+    recovery_progress_tilt_max_degrees: float = 90.0
+    recovery_progress_height_weight: float = 0.6
+    recovery_progress_upright_weight: float = 0.4
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,8 @@ class EnvironmentCfg:
     recovery_match_height_weight: float = 4.0
     recovery_match_gravity_weight: float = 2.0
     recovery_static_reset_probability: float = 0.25
+    recovery_phase_reset_min: float = -1.0
+    recovery_phase_reset_max: float = -1.0
     observation_noise_std: float = 0.0
 
 
@@ -173,6 +181,12 @@ def load_config(path: str | Path) -> StableMimicCfg:
         raise ValueError("recovery matching weights must be non-negative")
     if not 0.0 <= env.recovery_static_reset_probability <= 1.0:
         raise ValueError("recovery_static_reset_probability must be in [0, 1]")
+    phase_range_disabled = env.recovery_phase_reset_min < 0.0 and env.recovery_phase_reset_max < 0.0
+    phase_range_valid = (
+        0.0 <= env.recovery_phase_reset_min < env.recovery_phase_reset_max <= 1.0
+    )
+    if not (phase_range_disabled or phase_range_valid):
+        raise ValueError("recovery phase reset range must be disabled or satisfy 0 <= min < max <= 1")
     segmentation = RecoverySegmentationCfg(**raw.get("recovery_segmentation", {}))
     if segmentation.fallen_height_threshold <= 0.0:
         raise ValueError("recovery_segmentation.fallen_height_threshold must be positive")
@@ -192,6 +206,23 @@ def load_config(path: str | Path) -> StableMimicCfg:
     )
     if reward.success_bonus < 0.0:
         raise ValueError("reward.success_bonus must be non-negative")
+    if reward.recovery_progress_bonus < 0.0:
+        raise ValueError("reward.recovery_progress_bonus must be non-negative")
+    if reward.recovery_progress_height_max <= reward.recovery_progress_height_min:
+        raise ValueError("recovery progress height max must exceed min")
+    if not 0.0 < reward.recovery_progress_tilt_max_degrees < 180.0:
+        raise ValueError("recovery progress tilt max must be in (0, 180)")
+    if min(
+        reward.recovery_progress_height_weight,
+        reward.recovery_progress_upright_weight,
+    ) < 0.0:
+        raise ValueError("recovery progress weights must be non-negative")
+    if abs(
+        reward.recovery_progress_height_weight
+        + reward.recovery_progress_upright_weight
+        - 1.0
+    ) > 1.0e-6:
+        raise ValueError("recovery progress weights must sum to one")
     model_raw = dict(raw["model"])
     for key in ("expert_hidden_dims", "gate_hidden_dims", "critic_hidden_dims"):
         model_raw[key] = tuple(int(value) for value in model_raw[key])
