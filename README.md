@@ -39,6 +39,7 @@ stablemimic_replicate/
 ├── configs/
 │   ├── stablemimic_g1.yaml       # 历史 v5 工程配置与实验证据
 │   ├── stablemimic_g1_gmr_single_baseline.yaml # 第一版干净 NPZ 基线
+│   ├── stablemimic_g1_upstream_v7.yaml # 官方参考实现的可归因奖励 A/B
 │   └── motion/lafan1_g1.yaml     # LAFAN1/G1 数据约定
 ├── src/stablemimic/
 │   ├── config.py                 # YAML → 强类型配置及合法性检查
@@ -508,8 +509,64 @@ v5 的非静止 Recovery reset 限制在归一化 phase `0.40--0.75`，同时保
 reset 从静止最低倒地点开始。新增势函数只奖励相邻 policy step 的真实高度/直立度进步，
 不会直接奖励参考 root 的运动，也不会修改策略观察。
 
-当前第一版干净 NPZ 基线属于 training semantics v6，必须从随机初始化开始；v5 及更早
-checkpoint 不能 `--resume`，本实验也不使用 `--initialize-from`。
+第一版干净 NPZ 基线的冻结 checkpoint 属于 training semantics v6。当前代码加入新的
+tracking body/recovery shaping 边界后属于 v7，因此 v6 checkpoint 不能 `--resume`；仍可用
+`--initialize-from` 显式只加载 Agent/normalizer，optimizer、iteration 和 failure histogram
+都会重置。
+
+### v7：移植官方参考实现、一次只改奖励
+
+`configs/stablemimic_g1_upstream_v7.yaml` 是独立 A/B，不覆盖 v6 配置或 run：
+
+- 从 [BeyondMimic](https://github.com/HybridRobotics/whole_body_tracking) 固定 14 个 G1
+  关键刚体以及六类 tracking kernel 的公开权重/sigma；
+- 从 [HumanUP](https://github.com/RunpeiDong/HumanUP) Stage I 移植 base-height、body-up、
+  双 ankle-roll 承重三个奖励及公开权重；
+- 保持 v6 的 G1 asset、PD、uniform `action_scale: 0.5`、reset/data/PPO 不变；
+- 不启用 HumanUP 的 drag force、不施加 push，也不把 net contact force 冒充真正的
+  self-collision pair 检测。
+
+先跑 16/1024 环境 smoke，再从冻结 v6 checkpoint 做显式 warm start 的 100-iteration
+决策段：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1_upstream_v7.yaml --mode joint \
+  --num-envs 16 --iterations 1 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/gmr_upstream_v7_smoke16 \
+  --headless
+
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1_upstream_v7.yaml --mode joint \
+  --num-envs 1024 --iterations 1 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/gmr_upstream_v7_smoke1024 \
+  --headless
+
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1_upstream_v7.yaml --mode joint \
+  --num-envs 1024 --iterations 100 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/gmr_upstream_reward_v7 \
+  --initialize-from /root/gpufree-data/stablemimic_replicate/runs/gmr_single_tracking_paper_v1/checkpoint_001000.pt \
+  --headless
+```
+
+这一步不同时移植 BeyondMimic 的逐关节 action scale/PD/self-collision asset。它们会改变
+动作到力矩的物理含义，应在 reward A/B 有结论后另开语义版本测试，不能混在本轮里。
+
+实测记录（v7 warm-start，1024 env，total 1000 iterations）：
+
+| Recovery reset | v6 physical success | v7 physical success | v7 terminal success |
+|---|---:|---:|---:|
+| static | 0/256 | 19/256 | 0/256 |
+| early | 5/256 | 11/256 | 0/256 |
+| middle | 4/256 | 17/256 | 0/256 |
+| late | 27/256 | 48/256 | 0/256 |
+
+四组物理成功都提高，说明上游奖励移植有正向作用；但训练 success 目前仍要求
+`terminal_similarity >= 0.70`，iteration 1000 的 mean terminal similarity 仅约 `0.070`，所以
+从未进入 Transition。这不是“完全没有起身”，而是物理站稳判据与全身末帧相似度判据错配。
+下一版本应把 Recovery success 改成可审计的物理稳定持续条件，并继续保留 terminal
+similarity 作诊断；不能仅把 `0.70` 随意调低后宣称成功。
 
 ## 5. 确定性评估
 

@@ -1,0 +1,139 @@
+# Attributed v7 A/B: BeyondMimic tracking bodies/kernels plus HumanUP Stage-I
+# recovery shaping.  The v6 G1 asset, PD, action scale, resets, data, and PPO
+# remain fixed; pushes and drag forces remain disabled.
+seed: 42
+data_root: /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/npz
+output_root: /root/gpufree-data/stablemimic_replicate/runs
+
+tracking_motion_files:
+  - dance1_subject2.npz
+recovery_motion_files:
+  - fallAndGetUp1_subject1.npz
+  - fallAndGetUp1_subject4.npz
+  - fallAndGetUp1_subject5.npz
+  - fallAndGetUp2_subject2.npz
+  - fallAndGetUp2_subject3.npz
+  - fallAndGetUp3_subject1.npz
+
+environment:
+  num_envs: 4096
+  episode_length_s: 20.0
+  physics_dt: 0.005
+  decimation: 4
+  action_scale: 0.5
+  action_clip: 100.0
+  tracking_reset_probability: 0.5
+  transition_duration_s: 1.5
+  recovery_error_timeout_s: 2.0
+  recovery_failure_similarity_threshold: 0.05
+  recovery_terminal_similarity_threshold: 0.70
+  tracking_resumption_similarity_threshold: 0.70
+  recovered_like_height_ratio: 0.8
+  tracking_fall_recovery_enabled: false
+  tracking_fall_height_threshold: 0.5
+  tracking_fall_tilt_degrees: 60.0
+  recovery_match_joint_weight: 1.0
+  recovery_match_height_weight: 4.0
+  recovery_match_gravity_weight: 2.0
+  recovery_static_reset_probability: 0.0
+  recovery_phase_reset_min: -1.0
+  recovery_phase_reset_max: -1.0
+  observation_noise_std: 0.0
+
+recovery_segmentation:
+  enabled: true
+  fallen_height_threshold: 0.5
+  fallen_tilt_degrees: 60.0
+  upright_height_threshold: 0.7
+  upright_tilt_degrees: 30.0
+  hold_time_s: 0.5
+  maximum_clip_duration_s: 20.0
+  trim_to_tilted_nadir: true
+
+reset_noise:
+  root_xy: [-0.05, 0.05]
+  root_z: [-0.01, 0.01]
+  roll_pitch: [-0.1, 0.1]
+  yaw: [-0.2, 0.2]
+  linear_velocity_xy: [-0.5, 0.5]
+  linear_velocity_z: [-0.2, 0.2]
+  angular_velocity_roll_pitch: [-0.52, 0.52]
+  angular_velocity_yaw: [-0.78, 0.78]
+  joint_position: [-0.1, 0.1]
+
+reward:
+  # BeyondMimic official six-family tracking values.
+  root_position: {weight: 0.5, sigma: 0.30}
+  root_orientation: {weight: 0.5, sigma: 0.40}
+  body_position: {weight: 1.0, sigma: 0.30}
+  body_orientation: {weight: 1.0, sigma: 0.40}
+  body_linear_velocity: {weight: 1.0, sigma: 1.00}
+  body_angular_velocity: {weight: 1.0, sigma: 3.14}
+  tracking_body_names:
+    - pelvis
+    - left_hip_roll_link
+    - left_knee_link
+    - left_ankle_roll_link
+    - right_hip_roll_link
+    - right_knee_link
+    - right_ankle_roll_link
+    - torso_link
+    - left_shoulder_roll_link
+    - left_elbow_link
+    - left_wrist_yaw_link
+    - right_shoulder_roll_link
+    - right_elbow_link
+    - right_wrist_yaw_link
+  recovery_multiplier: 2.5
+  success_bonus: 1.0
+  action_rate_penalty: -0.01
+  torque_penalty: -0.00002
+  power_penalty: -0.00001
+  joint_limit_penalty: -1.0
+  recovery_progress_bonus: 0.0
+  recovery_progress_height_min: 0.25
+  recovery_progress_height_max: 0.70
+  recovery_progress_tilt_max_degrees: 90.0
+  recovery_progress_height_weight: 0.6
+  recovery_progress_upright_weight: 0.4
+  # HumanUP Stage-I public weights; drag_robot_up remains off.
+  recovery_base_height_weight: 5.0
+  recovery_base_height_target: 0.728
+  recovery_upright_weight: 0.25
+  recovery_double_support_weight: 2.5
+  recovery_support_force_threshold: 2.0
+  recovery_support_height_threshold: 0.1
+
+model:
+  history_length: 4
+  expert_hidden_dims: [512, 256, 128]
+  gate_hidden_dims: [256, 128]
+  critic_hidden_dims: [512, 256, 128]
+  activation: elu
+  initial_std: 1.0
+
+ppo:
+  rollout_steps: 24
+  epochs: 5
+  minibatches: 4
+  learning_rate: 0.001
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  value_clip: 0.2
+  value_loss_coefficient: 1.0
+  entropy_coefficient: 0.05
+  max_grad_norm: 1.0
+  target_kl: 0.01
+  gate_ce_coefficient: 0.1
+  transition_coefficient: 4.0
+  consistency_coefficient: 0.01
+  alignment_coefficient: 0.01
+  normalize_advantage: true
+
+training:
+  max_iterations: 10000
+  checkpoint_interval: 100
+  log_interval: 10
+  fall_recovery_warmup_iterations: 0
+  fall_recovery_ramp_iterations: 0

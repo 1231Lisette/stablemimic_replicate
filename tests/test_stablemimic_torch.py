@@ -249,6 +249,30 @@ class StableMimicTorchTests(unittest.TestCase):
         self.assertGreater(float(perfect.total), float(bad.total))
         self.assertAlmostEqual(float(recovery_origin.total), float(shifted.total), places=5)
 
+    def test_humanup_recovery_shaping_requires_recovery_and_double_support(self) -> None:
+        from dataclasses import replace
+
+        from stablemimic.rewards import recovery_shaping_reward
+
+        reward_config = replace(
+            self.config.reward,
+            recovery_base_height_weight=5.0,
+            recovery_upright_weight=0.25,
+            recovery_double_support_weight=2.5,
+        )
+        result = recovery_shaping_reward(
+            torch.tensor([0.728, 0.728, 0.2]),
+            torch.tensor([[0.0, 0.0, -1.0]] * 3),
+            torch.tensor([True, False, True]),
+            reward_config,
+            foot_contact_forces=torch.tensor([[3.0, 4.0], [3.0, 4.0], [3.0, 1.0]]),
+            foot_heights=torch.tensor([[0.05, 0.06], [0.05, 0.06], [0.05, 0.06]]),
+        )
+        self.assertGreater(float(result.base_height[0]), float(result.base_height[2]))
+        self.assertEqual(float(result.double_support[0]), 2.5)
+        self.assertEqual(float(result.total[1]), 0.0)
+        self.assertEqual(float(result.double_support[2]), 0.0)
+
     def test_actor_and_one_ppo_update_are_finite(self) -> None:
         from stablemimic.core.observations import ACTOR_OBS_DIM, CRITIC_OBS_DIM, GATE_OBS_DIM
         from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCritic

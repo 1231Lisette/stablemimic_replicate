@@ -42,6 +42,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.model.initial_std, 1.0)
         self.assertEqual(config.ppo.learning_rate, 1.0e-3)
 
+    def test_upstream_v7_has_attributed_reward_boundary(self) -> None:
+        path = Path(__file__).parents[1] / "configs" / "stablemimic_g1_upstream_v7.yaml"
+        config = load_config(path)
+        self.assertEqual(len(config.reward.tracking_body_names), 14)
+        self.assertEqual(config.reward.tracking_body_names[0], "pelvis")
+        self.assertAlmostEqual(config.reward.root_position.weight, 0.5)
+        self.assertAlmostEqual(config.reward.body_position.sigma, 0.3)
+        self.assertAlmostEqual(config.reward.recovery_base_height_weight, 5.0)
+        self.assertAlmostEqual(config.reward.recovery_upright_weight, 0.25)
+        self.assertAlmostEqual(config.reward.recovery_double_support_weight, 2.5)
+        self.assertEqual(config.environment.action_scale, 0.5)
+        self.assertFalse(config.environment.tracking_fall_recovery_enabled)
+
     def test_fall_recovery_curriculum_warmup_and_ramp(self) -> None:
         probability = fall_recovery_curriculum_probability
         self.assertEqual(probability(1, 100, 100), 0.0)

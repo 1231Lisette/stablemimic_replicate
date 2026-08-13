@@ -32,6 +32,14 @@ class RewardBreakdown:
     regularization: torch.Tensor
 
 
+@dataclass(frozen=True)
+class RecoveryShapingBreakdown:
+    total: torch.Tensor
+    base_height: torch.Tensor
+    upright: torch.Tensor
+    double_support: torch.Tensor
+
+
 def _kernel(error: torch.Tensor, sigma: float) -> torch.Tensor:
     if sigma <= 0.0:
         raise ValueError("kernel sigma must be positive")
@@ -43,6 +51,56 @@ def _quaternion_angle_squared(current: torch.Tensor, target: torch.Tensor) -> to
     target = target / target.norm(dim=-1, keepdim=True).clamp_min(1.0e-8)
     dot = (current * target).sum(-1).abs().clamp(0.0, 1.0)
     return torch.square(2.0 * torch.acos(dot))
+
+
+def recovery_shaping_reward(
+    root_height: torch.Tensor,
+    projected_gravity: torch.Tensor,
+    recovery_mask: torch.Tensor,
+    config: RewardCfg,
+    *,
+    foot_contact_forces: torch.Tensor | None = None,
+    foot_heights: torch.Tensor | None = None,
+) -> RecoveryShapingBreakdown:
+    """HumanUP Stage-I shaping, restricted to StableMimic Recovery samples.
+
+    The public HumanUP code rewards clipped exponential base height, body-up
+    orientation, and simultaneous support on both ankle-roll links.  Keeping
+    these terms separate from the six tracking kernels makes the attribution
+    explicit and leaves them disabled in old configs through zero weights.
+    """
+    if root_height.ndim != 1 or recovery_mask.shape != root_height.shape:
+        raise ValueError("root_height/recovery_mask shape mismatch")
+    if projected_gravity.shape != (root_height.shape[0], 3):
+        raise ValueError("projected_gravity shape mismatch")
+    base_height = config.recovery_base_height_weight * (
+        torch.exp(root_height.clamp(0.0, config.recovery_base_height_target)) - 1.0
+    )
+    upright = config.recovery_upright_weight * torch.exp(-projected_gravity[:, 2])
+    double_support = torch.zeros_like(root_height)
+    if config.recovery_double_support_weight > 0.0:
+        if foot_contact_forces is None or foot_heights is None:
+            raise ValueError("double-support reward requires foot contact forces and heights")
+        if foot_contact_forces.shape != (root_height.shape[0], 2):
+            raise ValueError("foot_contact_forces must have shape (N, 2)")
+        if foot_heights.shape != (root_height.shape[0], 2):
+            raise ValueError("foot_heights must have shape (N, 2)")
+        supported = (
+            (foot_contact_forces > config.recovery_support_force_threshold).all(dim=1)
+            & (foot_heights < config.recovery_support_height_threshold).all(dim=1)
+        )
+        double_support = config.recovery_double_support_weight * supported.float()
+    base_height = torch.where(recovery_mask, base_height, torch.zeros_like(base_height))
+    upright = torch.where(recovery_mask, upright, torch.zeros_like(upright))
+    double_support = torch.where(
+        recovery_mask, double_support, torch.zeros_like(double_support)
+    )
+    return RecoveryShapingBreakdown(
+        total=base_height + upright + double_support,
+        base_height=base_height,
+        upright=upright,
+        double_support=double_support,
+    )
 
 
 def whole_body_reward(

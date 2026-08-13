@@ -35,6 +35,13 @@ class RewardCfg:
     recovery_progress_tilt_max_degrees: float = 90.0
     recovery_progress_height_weight: float = 0.6
     recovery_progress_upright_weight: float = 0.4
+    tracking_body_names: tuple[str, ...] = ()
+    recovery_base_height_weight: float = 0.0
+    recovery_base_height_target: float = 0.728
+    recovery_upright_weight: float = 0.0
+    recovery_double_support_weight: float = 0.0
+    recovery_support_force_threshold: float = 2.0
+    recovery_support_height_threshold: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -204,7 +211,10 @@ def load_config(path: str | Path) -> StableMimicCfg:
             "root_position", "root_orientation", "body_position",
             "body_orientation", "body_linear_velocity", "body_angular_velocity",
         )},
-        **{key: value for key, value in reward_raw.items() if not isinstance(value, dict)},
+        **{
+            key: tuple(value) if key == "tracking_body_names" else value
+            for key, value in reward_raw.items() if not isinstance(value, dict)
+        },
     )
     if reward.success_bonus < 0.0:
         raise ValueError("reward.success_bonus must be non-negative")
@@ -225,6 +235,20 @@ def load_config(path: str | Path) -> StableMimicCfg:
         - 1.0
     ) > 1.0e-6:
         raise ValueError("recovery progress weights must sum to one")
+    if len(set(reward.tracking_body_names)) != len(reward.tracking_body_names):
+        raise ValueError("reward.tracking_body_names contains duplicates")
+    if min(
+        reward.recovery_base_height_weight,
+        reward.recovery_upright_weight,
+        reward.recovery_double_support_weight,
+    ) < 0.0:
+        raise ValueError("recovery shaping weights must be non-negative")
+    if reward.recovery_base_height_target <= 0.0:
+        raise ValueError("reward.recovery_base_height_target must be positive")
+    if reward.recovery_support_force_threshold < 0.0:
+        raise ValueError("reward.recovery_support_force_threshold must be non-negative")
+    if reward.recovery_support_height_threshold <= 0.0:
+        raise ValueError("reward.recovery_support_height_threshold must be positive")
     model_raw = dict(raw["model"])
     for key in ("expert_hidden_dims", "gate_hidden_dims", "critic_hidden_dims"):
         model_raw[key] = tuple(int(value) for value in model_raw[key])

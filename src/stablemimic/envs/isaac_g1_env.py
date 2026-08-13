@@ -37,7 +37,7 @@ from stablemimic.motion.torch_library import (
     TorchMotionSample,
     load_torch_motion_libraries,
 )
-from stablemimic.rewards import KinematicState, whole_body_reward
+from stablemimic.rewards import KinematicState, recovery_shaping_reward, whole_body_reward
 from stablemimic.sim import build_lafan1_g1_joint_mapping
 
 from .isaac_g1_env_cfg import StableMimicG1EnvCfg
@@ -61,6 +61,39 @@ class StableMimicG1Env(DirectRLEnv):
         if len(torso_ids) != 1:
             raise ValueError(f"expected one torso_link, got {torso_ids}")
         self._torso_body_ids = torso_ids
+        tracked_names = self._repository_config.reward.tracking_body_names
+        if tracked_names:
+            body_index = {name: index for index, name in enumerate(self._robot.body_names)}
+            missing = [name for name in tracked_names if name not in body_index]
+            if missing:
+                raise ValueError(f"configured tracking bodies not found in G1 asset: {missing}")
+            self._tracking_body_ids = torch.tensor(
+                [body_index[name] for name in tracked_names], dtype=torch.long, device=self.device
+            )
+        else:
+            self._tracking_body_ids = None
+        self._support_contact_body_ids = None
+        self._support_articulation_body_ids = None
+        if self._repository_config.reward.recovery_double_support_weight > 0.0:
+            if self._contact_sensor is None:
+                raise RuntimeError("double-support reward requires the robot contact sensor")
+            support_names = ("left_ankle_roll_link", "right_ankle_roll_link")
+            contact_index = {name: index for index, name in enumerate(self._contact_sensor.body_names)}
+            articulation_index = {name: index for index, name in enumerate(self._robot.body_names)}
+            missing = [
+                name for name in support_names
+                if name not in contact_index or name not in articulation_index
+            ]
+            if missing:
+                raise ValueError(f"support bodies not found in G1 contact sensor: {missing}")
+            self._support_contact_body_ids = torch.tensor(
+                [contact_index[name] for name in support_names], dtype=torch.long, device=self.device
+            )
+            self._support_articulation_body_ids = torch.tensor(
+                [articulation_index[name] for name in support_names],
+                dtype=torch.long,
+                device=self.device,
+            )
         self._motions = load_torch_motion_libraries(
             cfg.data_root,
             self.device,
@@ -123,7 +156,8 @@ class StableMimicG1Env(DirectRLEnv):
             for name in (
                 "total", "tracking", "root_position", "root_orientation", "body_position",
                 "body_orientation", "body_linear_velocity", "body_angular_velocity", "regularization",
-                "recovery_progress",
+                "recovery_progress", "recovery_base_height", "recovery_upright",
+                "recovery_double_support",
             )
         }
         self._latest_reward_components = {
@@ -131,7 +165,8 @@ class StableMimicG1Env(DirectRLEnv):
             for name in (
                 "root_position", "root_orientation", "body_position", "body_orientation",
                 "body_linear_velocity", "body_angular_velocity", "regularization",
-                "recovery_progress",
+                "recovery_progress", "recovery_base_height", "recovery_upright",
+                "recovery_double_support",
             )
         }
 
@@ -185,7 +220,7 @@ class StableMimicG1Env(DirectRLEnv):
     def physical_diagnostic_state(self) -> dict[str, torch.Tensor | list[str]]:
         """Expose simulator-only contact/control evidence for offline evaluation."""
         if self._contact_sensor is None:
-            raise RuntimeError("physical diagnostics were not enabled in the environment config")
+            raise RuntimeError("the robot contact sensor is not enabled")
         joint_position = self._robot.data.joint_pos[:, self._body_joint_ids]
         soft_limits = self._robot.data.soft_joint_pos_limits[:, self._body_joint_ids]
         limit_range = (soft_limits[..., 1] - soft_limits[..., 0]).clamp_min(1.0e-6)
@@ -287,6 +322,12 @@ class StableMimicG1Env(DirectRLEnv):
         self._fall_recovery_probability = float(probability)
 
     def _setup_scene(self) -> None:
+        contact_required = (
+            self.cfg.enable_physical_diagnostics
+            or self._repository_config.reward.recovery_double_support_weight > 0.0
+        )
+        if contact_required:
+            self.cfg.robot.spawn.activate_contact_sensors = True
         self._robot = Articulation(self.cfg.robot)
         self._reference_robot = Articulation(self.cfg.reference_robot)
         self._terminal_reference_robot = Articulation(self.cfg.terminal_reference_robot)
@@ -294,10 +335,10 @@ class StableMimicG1Env(DirectRLEnv):
         self.scene.articulations["reference_robot"] = self._reference_robot
         self.scene.articulations["terminal_reference_robot"] = self._terminal_reference_robot
         self._contact_sensor = None
-        if self.cfg.enable_physical_diagnostics:
+        if contact_required:
             if not self.cfg.robot.spawn.activate_contact_sensors:
                 raise ValueError(
-                    "robot.spawn.activate_contact_sensors must be true for physical diagnostics"
+                    "robot.spawn.activate_contact_sensors must be true when contacts are required"
                 )
             self._contact_sensor = ContactSensor(self.cfg.diagnostic_contact_sensor)
             self.scene.sensors["diagnostic_contact_sensor"] = self._contact_sensor
@@ -465,13 +506,16 @@ class StableMimicG1Env(DirectRLEnv):
         return {"policy": observations.actor, "critic": observations.critic}
 
     def _get_rewards(self) -> torch.Tensor:
-        current = self._kinematic_state(self._robot)
+        current = self._kinematic_state(self._robot, body_ids=self._tracking_body_ids)
         target = self._kinematic_state(
-            self._reference_robot, reference_z_offset=self._reference_z_offset
+            self._reference_robot,
+            reference_z_offset=self._reference_z_offset,
+            body_ids=self._tracking_body_ids,
         )
         terminal_target = self._kinematic_state(
             self._terminal_reference_robot,
             reference_z_offset=self._terminal_reference_z_offset,
+            body_ids=self._tracking_body_ids,
         )
         recovery = self._phase_state.phase == int(MotionPhase.RECOVERY)
         breakdown = whole_body_reward(
@@ -500,8 +544,31 @@ class StableMimicG1Env(DirectRLEnv):
             torch.zeros_like(current_progress_potential),
         )
         self._recovery_progress_potential.copy_(current_progress_potential)
+        foot_contact_forces = None
+        foot_heights = None
+        if self._support_contact_body_ids is not None:
+            foot_contact_forces = self._contact_sensor.data.net_forces_w[
+                :, self._support_contact_body_ids
+            ].norm(dim=-1)
+            foot_heights = (
+                self._robot.data.body_pos_w[:, self._support_articulation_body_ids, 2]
+                - self._terrain.env_origins[:, 2:3]
+            )
+        recovery_shaping = recovery_shaping_reward(
+            root_height,
+            self._robot.data.projected_gravity_b,
+            recovery,
+            self._repository_config.reward,
+            foot_contact_forces=foot_contact_forces,
+            foot_heights=foot_heights,
+        )
         for name in self._latest_reward_components:
-            value = recovery_progress if name == "recovery_progress" else getattr(breakdown, name)
+            if name == "recovery_progress":
+                value = recovery_progress
+            elif name.startswith("recovery_"):
+                value = getattr(recovery_shaping, name.removeprefix("recovery_"))
+            else:
+                value = getattr(breakdown, name)
             self._latest_reward_components[name].copy_(value)
         maximum = sum(
             getattr(self._repository_config.reward, name).weight
@@ -558,7 +625,11 @@ class StableMimicG1Env(DirectRLEnv):
         tracking_weight, recovery_weight = self._phase_state.reward_weights()
         phase_weight = torch.where(recovery, recovery_weight, tracking_weight)
         reward = (
-            (breakdown.tracking * phase_weight + breakdown.regularization) * self.step_dt
+            (
+                breakdown.tracking * phase_weight
+                + breakdown.regularization
+                + recovery_shaping.total
+            ) * self.step_dt
             + recovery_progress
         )
         reward = reward + began_transition.float() * self._repository_config.reward.success_bonus
@@ -567,6 +638,10 @@ class StableMimicG1Env(DirectRLEnv):
                 value = reward
             elif name == "recovery_progress":
                 value = recovery_progress
+            elif name.startswith("recovery_"):
+                value = getattr(
+                    recovery_shaping, name.removeprefix("recovery_")
+                ) * self.step_dt
             else:
                 value = getattr(breakdown, name) * self.step_dt
             self._episode_sums[name] += value
@@ -643,7 +718,10 @@ class StableMimicG1Env(DirectRLEnv):
         self._write_terminal_recovery_reference(env_ids)
 
     def _kinematic_state(
-        self, robot: Articulation, reference_z_offset: float = 0.0
+        self,
+        robot: Articulation,
+        reference_z_offset: float = 0.0,
+        body_ids: torch.Tensor | None = None,
     ) -> KinematicState:
         root_position = robot.data.root_pos_w
         body_position = robot.data.body_pos_w
@@ -652,13 +730,21 @@ class StableMimicG1Env(DirectRLEnv):
             offset[:, 2] = reference_z_offset
             root_position = root_position - offset
             body_position = body_position - offset[:, None, :]
+        body_quaternion = robot.data.body_quat_w
+        body_linear_velocity = robot.data.body_lin_vel_w
+        body_angular_velocity = robot.data.body_ang_vel_w
+        if body_ids is not None:
+            body_position = body_position[:, body_ids]
+            body_quaternion = body_quaternion[:, body_ids]
+            body_linear_velocity = body_linear_velocity[:, body_ids]
+            body_angular_velocity = body_angular_velocity[:, body_ids]
         return KinematicState(
             root_position=root_position,
             root_quaternion_xyzw=wxyz_to_xyzw(robot.data.root_quat_w),
             body_position=body_position,
-            body_quaternion_xyzw=wxyz_to_xyzw(robot.data.body_quat_w),
-            body_linear_velocity=robot.data.body_lin_vel_w,
-            body_angular_velocity=robot.data.body_ang_vel_w,
+            body_quaternion_xyzw=wxyz_to_xyzw(body_quaternion),
+            body_linear_velocity=body_linear_velocity,
+            body_angular_velocity=body_angular_velocity,
         )
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
