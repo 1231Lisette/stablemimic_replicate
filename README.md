@@ -37,7 +37,8 @@ arXiv:2608.02385 构建。
 ```text
 stablemimic_replicate/
 ├── configs/
-│   ├── stablemimic_g1.yaml       # 唯一主配置：环境、切片、奖励、网络、PPO
+│   ├── stablemimic_g1.yaml       # 历史 v5 工程配置与实验证据
+│   ├── stablemimic_g1_gmr_single_baseline.yaml # 第一版干净 NPZ 基线
 │   └── motion/lafan1_g1.yaml     # LAFAN1/G1 数据约定
 ├── src/stablemimic/
 │   ├── config.py                 # YAML → 强类型配置及合法性检查
@@ -423,6 +424,50 @@ Actor 按论文描述使用共享标量方差的高斯动作。`environment.acti
 论文同样没有公布方差初始化；配置采用 `model.initial_std: 0.2`，避免随机初始化阶段大比例
 动作越过单位幅值并使正则惩罚淹没 imitation reward。训练中该共享标量仍由 PPO 自由学习。
 
+### 3.4 第一版：单 Tracking 的 GMR NPZ 干净基线
+
+第一版不是继续此前 checkpoint，而是一次独立的随机初始化实验：Tracking 只使用视觉确认过的
+`dance1_subject2.npz`，Recovery 使用六个 `fallAndGetUp*.npz` 长录像切出的全部原子片段。
+配置中的文件白名单是实际训练数据边界，不需要复制数据或创建软链接。
+
+这一版保留论文式 50/50 Tracking/Recovery reset、两个 Expert、Gate、Critic 联合 PPO、六类
+imitation reward、Recovery `2.5` 倍权重和 50% uniform + 50% failure-adaptive Recovery phase
+采样；暂时关闭此前加入的 live Tracking fall→Recovery、静止最低点 reset、`0.40--0.75`
+phase window、recovery progress bonus 和外力。它恢复 fresh-run 的 `initial_std: 1.0`、
+`learning_rate: 0.001`，且禁止 `--resume`/`--initialize-from`。
+
+先做 16 环境和 1024 环境的一次 update smoke：
+
+```bash
+cd /root/gpufree-share/stablemimic_replicate
+
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1_gmr_single_baseline.yaml \
+  --mode joint --num-envs 16 --iterations 1 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/gmr_single_tracking_paper_v1_smoke16 \
+  --headless
+
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1_gmr_single_baseline.yaml \
+  --mode joint --num-envs 1024 --iterations 1 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/gmr_single_tracking_paper_v1_smoke1024 \
+  --headless
+```
+
+两档都出现 `[PASS]` 且 reward/loss/KL/std 全部有限后，第一段只训练 100 iterations：
+
+```bash
+/workspace/isaaclab/isaaclab.sh -p scripts/train_stablemimic.py \
+  --config configs/stablemimic_g1_gmr_single_baseline.yaml \
+  --mode joint --num-envs 1024 --iterations 100 \
+  --run-dir /root/gpufree-data/stablemimic_replicate/runs/gmr_single_tracking_paper_v1 \
+  --headless
+```
+
+100 iterations 是数值健康和学习方向的决策点，不是“已经学会起身”的终点。先检查分 phase
+reward/success、Gate 路由、KL、std、动作幅值和 NaN/PhysX 错误，再决定是否继续到 500、
+1000 或只加回一个 curriculum trick。
+
 ## 4. 续训
 
 ```bash
@@ -446,7 +491,7 @@ phase 语义。`joint_ab_std_020`、`joint_paper_aligned_v1`、`joint_terminal_e
 语义的 checkpoint 才可续训。
 runner 会检查 `training_semantics_version`，对旧 checkpoint 明确报错，避免误续训。
 
-v5 使用 `--initialize-from` 从旧 checkpoint 只载入 Agent 和 normalizer，但重置 optimizer、
+历史 v5 使用 `--initialize-from` 从旧 checkpoint 只载入 Agent 和 normalizer，但重置 optimizer、
 iteration 和 failure histogram。它与 `--resume` 互斥，适合奖励或 curriculum 语义改变后的
 显式 warm start：
 
@@ -462,6 +507,9 @@ iteration 和 failure histogram。它与 `--resume` 互斥，适合奖励或 cur
 v5 的非静止 Recovery reset 限制在归一化 phase `0.40--0.75`，同时保留 25% Recovery
 reset 从静止最低倒地点开始。新增势函数只奖励相邻 policy step 的真实高度/直立度进步，
 不会直接奖励参考 root 的运动，也不会修改策略观察。
+
+当前第一版干净 NPZ 基线属于 training semantics v6，必须从随机初始化开始；v5 及更早
+checkpoint 不能 `--resume`，本实验也不使用 `--initialize-from`。
 
 ## 5. 确定性评估
 

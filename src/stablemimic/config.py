@@ -121,6 +121,8 @@ class StableMimicCfg:
     seed: int
     data_root: Path
     output_root: Path
+    tracking_motion_files: tuple[str, ...]
+    recovery_motion_files: tuple[str, ...]
     environment: EnvironmentCfg
     recovery_segmentation: RecoverySegmentationCfg
     reward: RewardCfg
@@ -234,10 +236,23 @@ def load_config(path: str | Path) -> StableMimicCfg:
         raise ValueError("training.fall_recovery_warmup_iterations must be non-negative")
     if training.fall_recovery_ramp_iterations < 0:
         raise ValueError("training.fall_recovery_ramp_iterations must be non-negative")
+    tracking_motion_files = tuple(str(value) for value in raw.get("tracking_motion_files", ()))
+    recovery_motion_files = tuple(str(value) for value in raw.get("recovery_motion_files", ()))
+    if bool(tracking_motion_files) != bool(recovery_motion_files):
+        raise ValueError("tracking_motion_files and recovery_motion_files must be set together")
+    if len(set(tracking_motion_files)) != len(tracking_motion_files):
+        raise ValueError("tracking_motion_files contains duplicates")
+    if len(set(recovery_motion_files)) != len(recovery_motion_files):
+        raise ValueError("recovery_motion_files contains duplicates")
+    overlap = set(tracking_motion_files).intersection(recovery_motion_files)
+    if overlap:
+        raise ValueError(f"tracking/recovery motion file lists overlap: {sorted(overlap)}")
     return StableMimicCfg(
         seed=int(raw["seed"]),
         data_root=Path(raw["data_root"]),
         output_root=Path(raw["output_root"]),
+        tracking_motion_files=tracking_motion_files,
+        recovery_motion_files=recovery_motion_files,
         environment=env,
         recovery_segmentation=segmentation,
         reward=reward,

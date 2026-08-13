@@ -9,6 +9,7 @@ import numpy as np
 
 from stablemimic.config import RecoverySegmentationCfg
 
+from .npz import validate_standard_npz
 from .reference import MotionReference
 
 LAFAN1_G1_FPS = 30.0
@@ -54,16 +55,54 @@ class MotionLibraries:
     recovery: tuple[Path, ...]
 
 
-def discover_motion_libraries(data_root: str | Path) -> MotionLibraries:
+def _resolve_selected_files(root: Path, names: tuple[str, ...], label: str) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for name in names:
+        path = (root / name).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as error:
+            raise ValueError(f"{label} motion escapes data_root: {name}") from error
+        if path.suffix.lower() not in (".csv", ".npz"):
+            raise ValueError(f"Unsupported {label} motion extension: {name}")
+        if not path.is_file():
+            raise FileNotFoundError(f"Selected {label} motion does not exist: {path}")
+        paths.append(path)
+    return tuple(paths)
+
+
+def _discover_by_prefix(root: Path, prefix: str) -> tuple[Path, ...]:
+    paths = tuple(sorted((*root.glob(f"{prefix}*.csv"), *root.glob(f"{prefix}*.npz"))))
+    stems = [path.stem for path in paths]
+    duplicates = sorted({stem for stem in stems if stems.count(stem) > 1})
+    if duplicates:
+        raise ValueError(f"Multiple motion formats found for the same stems: {duplicates}")
+    return paths
+
+
+def discover_motion_libraries(
+    data_root: str | Path,
+    *,
+    tracking_files: tuple[str, ...] = (),
+    recovery_files: tuple[str, ...] = (),
+) -> MotionLibraries:
     root = Path(data_root).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"LAFAN1 G1 data directory does not exist: {root}")
-    tracking = tuple(sorted(root.glob("dance*.csv")))
-    recovery = tuple(sorted(root.glob("fallAndGetUp*.csv")))
+    if bool(tracking_files) != bool(recovery_files):
+        raise ValueError("tracking_files and recovery_files must be set together")
+    tracking = (
+        _resolve_selected_files(root, tracking_files, "tracking")
+        if tracking_files else _discover_by_prefix(root, "dance")
+    )
+    recovery = (
+        _resolve_selected_files(root, recovery_files, "recovery")
+        if recovery_files else _discover_by_prefix(root, "fallAndGetUp")
+    )
     if not tracking:
-        raise FileNotFoundError(f"No dance*.csv files found under {root}")
+        raise FileNotFoundError(f"No dance motion files found under {root}")
     if not recovery:
-        raise FileNotFoundError(f"No fallAndGetUp*.csv files found under {root}")
+        raise FileNotFoundError(f"No fallAndGetUp motion files found under {root}")
     overlap = set(tracking).intersection(recovery)
     if overlap:
         raise ValueError(f"Tracking/recovery libraries overlap: {sorted(overlap)}")
@@ -95,6 +134,54 @@ def load_lafan1_csv(path: str | Path, *, fps: float = LAFAN1_G1_FPS) -> MotionRe
         root_quat_xyzw=data[:, 3:7],
         joint_pos=data[:, 7:36],
     )
+
+
+def load_lafan1_npz(path: str | Path) -> MotionReference:
+    """Load a validated BeyondMimic-style G1 NPZ as a training reference."""
+    npz_path = Path(path).expanduser().resolve()
+    if not npz_path.is_file():
+        raise FileNotFoundError(f"Motion NPZ does not exist: {npz_path}")
+    with np.load(npz_path, allow_pickle=False) as archive:
+        arrays = {name: archive[name] for name in archive.files}
+    frames = validate_standard_npz(arrays, expected_joint_count=len(LAFAN1_G1_JOINT_NAMES))
+    if "joint_names" in arrays:
+        joint_names = tuple(str(value) for value in np.asarray(arrays["joint_names"]).tolist())
+        if joint_names != LAFAN1_G1_JOINT_NAMES:
+            raise ValueError(f"NPZ joint order does not match G1-29DoF contract: {npz_path}")
+    root_pos = np.asarray(
+        arrays.get("source_root_pos", np.asarray(arrays["body_pos_w"])[:, 0]),
+        dtype=np.float64,
+    )
+    root_quat_wxyz = np.asarray(
+        arrays.get("source_root_quat_wxyz", np.asarray(arrays["body_quat_w"])[:, 0]),
+        dtype=np.float64,
+    )
+    if root_pos.shape != (frames, 3) or root_quat_wxyz.shape != (frames, 4):
+        raise ValueError("NPZ root fields must have shapes (T, 3) and (T, 4)")
+    if not np.all(np.isfinite(root_pos)) or not np.all(np.isfinite(root_quat_wxyz)):
+        raise ValueError(f"NPZ root fields contain NaN or Inf: {npz_path}")
+    norms = np.linalg.norm(root_quat_wxyz, axis=1)
+    if np.any(norms <= 1.0e-12) or not np.allclose(norms, 1.0, atol=1.0e-4):
+        raise ValueError(f"NPZ root quaternions are not normalized: {npz_path}")
+    root_quat_wxyz = root_quat_wxyz / norms[:, None]
+    fps = float(np.asarray(arrays["fps"]).reshape(-1)[0])
+    return MotionReference(
+        name=npz_path.stem,
+        fps=fps,
+        joint_names=LAFAN1_G1_JOINT_NAMES,
+        root_pos=root_pos,
+        root_quat_xyzw=root_quat_wxyz[:, (1, 2, 3, 0)],
+        joint_pos=np.asarray(arrays["joint_pos"], dtype=np.float64),
+    )
+
+
+def load_lafan1_motion(path: str | Path) -> MotionReference:
+    motion_path = Path(path)
+    if motion_path.suffix.lower() == ".csv":
+        return load_lafan1_csv(motion_path)
+    if motion_path.suffix.lower() == ".npz":
+        return load_lafan1_npz(motion_path)
+    raise ValueError(f"Unsupported motion extension: {motion_path}")
 
 
 def _root_tilt_degrees(root_quat_xyzw: np.ndarray) -> np.ndarray:
@@ -179,5 +266,5 @@ def load_segmented_recovery_motions(
 ) -> tuple[MotionReference, ...]:
     clips: list[MotionReference] = []
     for path in paths:
-        clips.extend(segment_recovery_motion(load_lafan1_csv(path), config))
+        clips.extend(segment_recovery_motion(load_lafan1_motion(path), config))
     return tuple(clips)

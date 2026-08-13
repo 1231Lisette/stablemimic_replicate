@@ -13,7 +13,7 @@ from stablemimic.core.geometry import projected_gravity_from_xyzw
 from .lafan1 import (
     MotionLibraries,
     discover_motion_libraries,
-    load_lafan1_csv,
+    load_lafan1_motion,
     load_segmented_recovery_motions,
 )
 from .reference import MotionReference
@@ -108,7 +108,7 @@ class TorchMotionLibrary:
 
     @classmethod
     def from_paths(cls, paths: tuple[Path, ...], device: torch.device | str) -> "TorchMotionLibrary":
-        return cls(tuple(load_lafan1_csv(path) for path in paths), device)
+        return cls(tuple(load_lafan1_motion(path) for path in paths), device)
 
     @property
     def num_motions(self) -> int:
@@ -247,8 +247,14 @@ def load_torch_motion_libraries(
     data_root: str | Path,
     device: torch.device | str,
     recovery_segmentation: RecoverySegmentationCfg | None = None,
+    tracking_files: tuple[str, ...] = (),
+    recovery_files: tuple[str, ...] = (),
 ) -> TorchMotionLibraries:
-    paths: MotionLibraries = discover_motion_libraries(data_root)
+    paths: MotionLibraries = discover_motion_libraries(
+        data_root,
+        tracking_files=tracking_files,
+        recovery_files=recovery_files,
+    )
     segmentation = recovery_segmentation or RecoverySegmentationCfg()
     return TorchMotionLibraries(
         tracking=TorchMotionLibrary.from_paths(paths.tracking, device),

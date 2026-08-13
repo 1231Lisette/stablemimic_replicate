@@ -5,6 +5,8 @@ from .lafan1 import (
     MotionLibraries,
     discover_motion_libraries,
     load_lafan1_csv,
+    load_lafan1_motion,
+    load_lafan1_npz,
     load_segmented_recovery_motions,
     segment_recovery_motion,
 )
@@ -29,6 +31,8 @@ __all__ = [
     "MotionSample",
     "discover_motion_libraries",
     "load_lafan1_csv",
+    "load_lafan1_motion",
+    "load_lafan1_npz",
     "load_segmented_recovery_motions",
     "segment_recovery_motion",
 ]

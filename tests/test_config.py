@@ -30,6 +30,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.training.fall_recovery_warmup_iterations, 5000)
         self.assertEqual(config.training.fall_recovery_ramp_iterations, 100)
 
+    def test_clean_single_tracking_npz_baseline(self) -> None:
+        path = Path(__file__).parents[1] / "configs" / "stablemimic_g1_gmr_single_baseline.yaml"
+        config = load_config(path)
+        self.assertEqual(config.tracking_motion_files, ("dance1_subject2.npz",))
+        self.assertEqual(len(config.recovery_motion_files), 6)
+        self.assertFalse(config.environment.tracking_fall_recovery_enabled)
+        self.assertEqual(config.environment.recovery_static_reset_probability, 0.0)
+        self.assertEqual(config.environment.recovery_phase_reset_min, -1.0)
+        self.assertEqual(config.reward.recovery_progress_bonus, 0.0)
+        self.assertEqual(config.model.initial_std, 1.0)
+        self.assertEqual(config.ppo.learning_rate, 1.0e-3)
+
     def test_fall_recovery_curriculum_warmup_and_ramp(self) -> None:
         probability = fall_recovery_curriculum_probability
         self.assertEqual(probability(1, 100, 100), 0.0)

@@ -3,6 +3,23 @@
 本文件保存失败实验和修正依据。不同代码语义下的 reward 绝对值不能直接横向比较，所有旧
 checkpoint 都保留在 `gpu_data` 作证据，不放入 Git。
 
+## 2026-08-13：GMR NPZ 单 Tracking 干净基线 v1（启动前）
+
+- 数据：Tracking 白名单仅 `dance1_subject2.npz`；Recovery 白名单为六条
+  `fallAndGetUp*.npz`，经同一原子切片器得到 85 clips。
+- 随机初始化；不使用 `--resume` 或 `--initialize-from`。
+- 保留：50/50 reset、全 phase 50% uniform + 50% failure-adaptive Recovery sampling、
+  Motion/Recovery Expert + proprioceptive Gate + Critic 联合 PPO、六类 imitation reward、
+  Recovery multiplier 2.5。
+- 暂停：live Tracking fall→Recovery、static-nadir reset、0.40--0.75 phase window、
+  recovery progress bonus、外力。
+- fresh-run 参数：`initial_std=1.0`、`learning_rate=1e-3`；training semantics 升至 v6。
+- 启动前验证：本地 44 tests（1 skip）通过；服务器 corrected GMR 真实 CSV 44/44、
+  compileall、diff-check 通过；真实 NPZ 加载为 1 Tracking/6574 frames 与
+  85 Recovery clips/17339 frames，均为 50 Hz。
+- 下一门槛：16-env 与 1024-env 各 1 iteration CUDA smoke；二者通过后才启动独立
+  `gmr_single_tracking_paper_v1` 的首个 100-iteration 决策段。
+
 ## 2026-08-13：官方 GMR G1-29DoF 重定向与参考修正
 
 - 停止 v5 PPO 后，冻结官方 GMR revision

@@ -16,7 +16,7 @@ from stablemimic.models import StableMimicActor, StableMimicAgent, StableMimicCr
 from .ppo import PPO
 from .storage import RolloutStorage
 
-TRAINING_SEMANTICS_VERSION = 5
+TRAINING_SEMANTICS_VERSION = 6
 
 
 class StableMimicRunner:

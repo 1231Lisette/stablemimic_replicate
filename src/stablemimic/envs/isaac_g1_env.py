@@ -65,6 +65,8 @@ class StableMimicG1Env(DirectRLEnv):
             cfg.data_root,
             self.device,
             self._repository_config.recovery_segmentation,
+            self._repository_config.tracking_motion_files,
+            self._repository_config.recovery_motion_files,
         )
         # The USD uses instanced collision prims that cannot be disabled through
         # CollisionPropertiesCfg. Keep the FK articulation far above the scene
