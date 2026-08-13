@@ -88,6 +88,20 @@ class StableMimicTorchTests(unittest.TestCase):
         )
         self.assertEqual(mask.tolist(), [True, True, False, False, False])
 
+    def test_fallen_state_selection_does_not_implicitly_zero_velocity(self) -> None:
+        from stablemimic.core.phases import recovery_zero_velocity_mask
+
+        recovery = torch.tensor([True, True, False, True])
+        probabilistic_static = torch.tensor([False, True, False, False])
+        self.assertEqual(
+            recovery_zero_velocity_mask(probabilistic_static, recovery, False).tolist(),
+            [False, True, False, False],
+        )
+        self.assertEqual(
+            recovery_zero_velocity_mask(probabilistic_static, recovery, True).tolist(),
+            [True, True, False, True],
+        )
+
     def test_nearest_recovery_frame_matches_height_gravity_and_joints(self) -> None:
         import numpy as np
         from stablemimic.motion.lafan1 import LAFAN1_G1_JOINT_NAMES

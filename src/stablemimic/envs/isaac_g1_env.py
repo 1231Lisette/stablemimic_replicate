@@ -26,7 +26,12 @@ from stablemimic.core.observations import (
     build_proprioception,
     build_recovery_reference,
 )
-from stablemimic.core.phases import MotionPhase, PhaseState, uncommanded_tracking_fall
+from stablemimic.core.phases import (
+    MotionPhase,
+    PhaseState,
+    recovery_zero_velocity_mask,
+    uncommanded_tracking_fall,
+)
 from stablemimic.motion.torch_library import (
     FailureAdaptiveSampler,
     TorchMotionSample,
@@ -707,9 +712,10 @@ class StableMimicG1Env(DirectRLEnv):
                 self.cfg.recovery_phase_reset_min, self.cfg.recovery_phase_reset_max
             )
             recovery_times = normalized_time * self._motions.recovery.durations[recovery_ids]
-        static_recovery_reset = recovery_reset & (
+        probabilistic_static_recovery_reset = recovery_reset & (
             torch.rand(count, device=self.device) < self.cfg.recovery_static_reset_probability
         )
+        static_recovery_reset = probabilistic_static_recovery_reset
         if self.cfg.recovery_reset_at_fallen_state:
             static_recovery_reset = recovery_reset.clone()
         static_count = int(static_recovery_reset.sum())
@@ -763,8 +769,10 @@ class StableMimicG1Env(DirectRLEnv):
         )
         root_pose = torch.cat((root_position, root_quaternion), dim=-1)
         root_velocity = torch.cat((reset_sample.root_lin_vel_world, reset_sample.root_ang_vel_world), dim=-1)
-        zero_velocity_reset = static_recovery_reset | (
-            recovery_reset & self.cfg.recovery_reset_zero_velocity
+        zero_velocity_reset = recovery_zero_velocity_mask(
+            probabilistic_static_recovery_reset,
+            recovery_reset,
+            self.cfg.recovery_reset_zero_velocity,
         )
         root_velocity[zero_velocity_reset] = 0.0
         root_velocity[:, :2] += self._uniform_noise("linear_velocity_xy", (count, 2))

@@ -33,6 +33,20 @@ def uncommanded_tracking_fall(
     return current_fallen & ~reference_fallen
 
 
+def recovery_zero_velocity_mask(
+    probabilistic_static_reset: torch.Tensor,
+    recovery_reset: torch.Tensor,
+    force_all_recovery_zero_velocity: bool,
+) -> torch.Tensor:
+    """Separate static-training resets from evaluation-only fallen-state selection."""
+    if probabilistic_static_reset.shape != recovery_reset.shape:
+        raise ValueError("recovery reset masks must have matching shapes")
+    return probabilistic_static_reset | (
+        recovery_reset if force_all_recovery_zero_velocity
+        else torch.zeros_like(recovery_reset)
+    )
+
+
 @dataclass
 class PhaseState:
     phase: torch.Tensor

@@ -262,3 +262,16 @@ checkpoint 不能续训。正确顺序是：真实数据审计 → 全测试 →
 - 按预设停止规则终止 v5，不继续到 500/1000。更多同配置训练主要优化中后段，尚无证据能
   跨越真正倒地点的撑地/翻身门槛。下一实验应先把运动学 get-up reference 转为当前 G1
   接触/执行器下的动力学可执行轨迹，或引入经验证的阶段化支撑目标，而不是再调训练轮数。
+
+## corrected GMR 50 Hz NPZ（2026-08-13）
+
+- 按公开 BeyondMimic 的 half-open 50 Hz 约定，将 corrected GMR 的14条30 Hz CSV转换为
+  本地NPZ；使用当前训练环境同一个 Isaac Lab G1-29DoF asset 做全身FK，没有上传W&B，
+  没有修改训练data root或启动PPO。
+- 14个文件共73,733个输入帧、122,871个输出帧、261,439,762字节；每条均包含7个标准
+  motion字段，并额外保存29个joint names、46个body names、root reference和sample times。
+- 完整audit通过源/输出SHA-256、50 Hz帧数、29关节顺序、CSV重采样parity、finite、统一
+  body count、body quaternion norm和pelvis/root FK一致性。标准kinematic replayer的5帧
+  headless smoke通过，日志明确为`physics_step=False`。
+- NPZ replay用于数据与视觉验收，不是自由动力学gate。下一步由用户在服务器Desktop查看
+  指定起身窗口；通过后才建立独立的干净paper-baseline训练配置。

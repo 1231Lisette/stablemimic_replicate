@@ -14,6 +14,10 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--config", default="configs/stablemimic_g1.yaml")
+parser.add_argument(
+    "--data-root", default=None,
+    help="Optional evaluation-only motion root override; does not modify the training config.",
+)
 parser.add_argument("--checkpoint", required=True)
 parser.add_argument("--num-envs", type=int, default=64)
 parser.add_argument("--steps", type=int, default=1000)
@@ -89,7 +93,10 @@ def main() -> None:
         parser.error("--reference-actions requires a Recovery reset diagnostic")
     env_cfg = StableMimicG1EnvCfg()
     env_cfg.stablemimic_config_path = str(Path(args_cli.config).resolve())
-    env_cfg.data_root = str(config.data_root)
+    env_cfg.data_root = str(
+        Path(args_cli.data_root).expanduser().resolve()
+        if args_cli.data_root is not None else config.data_root
+    )
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.episode_length_s = config.environment.episode_length_s
     env_cfg.sim.dt = config.environment.physics_dt

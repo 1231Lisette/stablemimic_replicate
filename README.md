@@ -125,6 +125,7 @@ Actor/Gate 看不到所匹配的 motion id、frame、phase 或 hidden recovery s
 数据: /root/gpufree-data/stablemimic_replicate
 旧 CSV : /root/gpufree-data/stablemimic_replicate/datasets/lafan1/g1
 GMR CSV: /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/csv
+GMR NPZ: /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/npz
 运行输出: /root/gpufree-data/stablemimic_replicate/runs
 ```
 
@@ -264,6 +265,37 @@ PY
 
 如果 `ps` 仍显示进程，就只继续等待，不要再次启动。如果进程已退出但没有
 `Wrote 14 motions`/`manifest.json`，先查看 `tail -n 100 "$OUT/retarget.log"`，不要启动训练。
+
+### 转成标准 50 Hz NPZ 并查看
+
+转换器使用训练环境同一个 `isaaclab_assets.G1_29DOF_CFG` 做 FK，输出 BeyondMimic 标准
+字段 `fps/joint_pos/joint_vel/body_pos_w/body_quat_w/body_lin_vel_w/body_ang_vel_w`；额外
+保存 joint/body names、root reference、sample time 和 SHA-256 manifest。它不会上传 W&B，
+也不会切换训练配置：
+
+```bash
+cd /root/gpufree-share/stablemimic_replicate
+env PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/convert_lafan1_npz.py \
+  --input-dir /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/csv \
+  --output-dir /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/npz \
+  --output-fps 50 --overwrite --headless --device cuda:0
+
+env PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/audit_lafan1_npz.py \
+  --npz-dir /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/npz
+```
+
+在服务器 Desktop 的 Terminal 中查看一段起身动作。不要添加 `--headless`：
+
+```bash
+cd /root/gpufree-share/stablemimic_replicate
+env PYTHONPATH=src /workspace/isaaclab/isaaclab.sh -p scripts/replay_lafan1_npz.py \
+  --file /root/gpufree-data/stablemimic_replicate/datasets/lafan1_gmr_bb1bbe4_corrected/npz/fallAndGetUp1_subject1.npz \
+  --start-time 4.0 --end-time 12.0 --loop --follow-camera --device cuda:0
+```
+
+这是标准 kinematic NPZ replay：每帧直接写 reference root/joint state，日志会明确打印
+`physics_step=False`。它用于检查格式、关节映射和视觉动作，不是策略或电机动力学测试；
+关闭窗口或按 `Ctrl-C` 即可结束循环。
 
 ## 1. 检查环境与数据
 
